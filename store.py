@@ -179,6 +179,20 @@ def recent_events(limit: int = 200) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def wal_checkpoint() -> None:
+    """Force WAL checkpoint to keep WAL file small."""
+    with _lock:
+        _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def prune_events(keep_days: int = 30) -> int:
+    """Delete events older than keep_days. Returns rows deleted."""
+    cutoff = int(time.time()) - keep_days * 86400
+    with tx() as c:
+        c.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+        return c.execute("SELECT changes()").fetchone()[0]
+
+
 def backup_db() -> Optional[Path]:
     """Copy DB to data/backups/, keep last DB_BACKUP_KEEP_DAYS days."""
     backup_dir = settings.data_dir / "backups"

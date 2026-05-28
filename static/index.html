@@ -283,6 +283,9 @@
                 <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;" :style="connected ? 'background:#34d399' : 'background:#f87171'"></span>
                 {{ connected ? 'Live' : '断开' }}
             </div>
+            <button @click="mobTab='config'" class="btn btn-icon btn-slate">
+                <i class="ph ph-gear" style="font-size:16px;"></i>
+            </button>
             <button @click="toggleTheme" class="btn btn-icon btn-slate">
                 <i class="ph" :class="theme==='dark' ? 'ph-sun' : 'ph-moon'" style="font-size:16px;"></i>
             </button>
@@ -323,7 +326,7 @@
     <div id="app-main">
 
         <!-- ── Panel 1: 配置 ───────────────────────────────────── -->
-        <section class="desk-panel glass" :class="{ 'mob-active': mobTab === 'config' }">
+        <section class="desk-panel glass" :class="{ 'mob-active': mobTab === 'config' }" style="padding:0 0.875rem;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.875rem;flex-shrink:0;">
                 <div class="sec-title"><i class="ph ph-sliders-horizontal"></i> 配置</div>
                 <span v-if="configSaving" style="font-size:11px;color:#a5b4fc;display:flex;align-items:center;gap:4px;">
@@ -539,7 +542,7 @@
         </section>
 
         <!-- ── Panel 3: 详情 + 日志 ─────────────────────────────── -->
-        <section class="desk-panel glass" :class="{ 'mob-active': mobTab === 'detail' }">
+        <section class="desk-panel glass" :class="{ 'mob-active': mobTab === 'detail' }" style="padding:0 0.875rem;">
             <!-- Tab 切换 -->
             <div style="display:flex;gap:5px;margin-bottom:0.75rem;flex-shrink:0;align-items:center;">
                 <button @click="rightTab='detail'" class="ftab" :class="rightTab==='detail'?'ftab-on':'ftab-off'">

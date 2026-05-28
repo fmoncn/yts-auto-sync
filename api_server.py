@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from config import settings
 from store import (
     list_movies, get_movie, update_movie, delete_movie, log_event,
-    recent_events, find_by_hash, backup_db,
+    recent_events, find_by_hash, backup_db, wal_checkpoint, prune_events,
 )
 import rss_watcher
 import qbit_client
@@ -155,6 +155,10 @@ async def _backup_loop(stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
         if not stop.is_set():
+            await asyncio.to_thread(wal_checkpoint)
+            pruned = await asyncio.to_thread(prune_events, 30)
+            if pruned:
+                log_event("info", f"pruned {pruned} old events")
             dest = await asyncio.to_thread(backup_db)
             if dest:
                 log_event("info", f"DB backup: {dest.name}")

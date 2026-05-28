@@ -65,13 +65,19 @@ async def upload_movie(movie_dir: Path, imdb_id: str) -> bool:
     return await asyncio.to_thread(_run)
 
 
+_obscure_cache: dict[str, str] = {}
+
 def _obscure(password: str) -> str:
-    """Use rclone to obscure a password (required by rclone WebDAV auth)."""
+    """Use rclone to obscure a password (cached)."""
+    if password in _obscure_cache:
+        return _obscure_cache[password]
     try:
         r = subprocess.run(
             ["rclone", "obscure", password],
             capture_output=True, text=True, timeout=5
         )
-        return r.stdout.strip()
+        result = r.stdout.strip()
+        _obscure_cache[password] = result
+        return result
     except Exception:
         return password
