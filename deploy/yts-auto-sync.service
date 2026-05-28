@@ -1,0 +1,20 @@
+[Unit]
+Description=YTS Auto Sync
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+User=fmon
+WorkingDirectory=/home/fmon/yts-auto-sync
+ExecStart=/home/fmon/yts-auto-sync/.venv/bin/python api_server.py
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/fmon/yts-auto-sync/.env
+MemoryMax=1G
+CPUQuota=70%
+
+[Install]
+WantedBy=multi-user.target

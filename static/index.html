@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>YTS Auto Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: { extend: {
+                colors: { slate: { 850: '#192235', 950: '#090d16' } },
+                fontFamily: {
+                    sans: ['Inter','system-ui','-apple-system','sans-serif'],
+                    mono: ['JetBrains Mono','Fira Code','Menlo','monospace'],
+                }
+            }}
+        }
+    </script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root,[data-theme="dark"]{--bg:#090d16;--bg-grid:rgba(30,41,59,0.3);--surface-1:rgba(15,23,42,0.75);--surface-2:#0f172a;--surface-3:#1e293b;--surface-4:#334155;--border-1:rgba(255,255,255,0.08);--border-2:#334155;--border-3:#1e293b;--text-1:#f8fafc;--text-2:#cbd5e1;--text-3:#94a3b8;--text-4:#64748b;--accent:#6366f1;--accent-low:rgba(99,102,241,0.1);--accent-border:rgba(99,102,241,0.3);--scrollbar:#334155;--scrollbar-h:#475569;--shadow:0 25px 50px -12px rgba(0,0,0,0.5);--shadow-sm:0 2px 8px rgba(0,0,0,0.4);--active-bg:rgba(30,41,59,0.9);--active-glow:rgba(99,102,241,0.2);--sticky-bg:rgba(15,23,42,0.95);--radius-panel:1.5rem;--glow-1:rgba(99,102,241,0.15);--glow-2:rgba(59,130,246,0.10);--glow-3:rgba(16,185,129,0.10);}
+        [data-theme="light"]{--bg:#FAF9F5;--bg-grid:rgba(180,170,155,0.2);--surface-1:rgba(255,253,248,0.85);--surface-2:#FFFFFF;--surface-3:#F0EDE6;--surface-4:#E2DDD5;--border-1:rgba(180,170,155,0.35);--border-2:#D6D0C7;--border-3:#E8E3DB;--text-1:#1F1F1E;--text-2:#4A4743;--text-3:#6B6862;--text-4:#9B9690;--accent:#CC785C;--accent-low:rgba(204,120,92,0.10);--accent-border:rgba(204,120,92,0.35);--scrollbar:#C8C3BB;--scrollbar-h:#A8A39B;--shadow:0 8px 32px rgba(60,50,40,0.10);--shadow-sm:0 2px 8px rgba(60,50,40,0.06);--active-bg:rgba(204,120,92,0.06);--active-glow:rgba(204,120,92,0.15);--sticky-bg:rgba(250,249,245,0.97);--radius-panel:1rem;--glow-1:rgba(204,120,92,0.08);--glow-2:rgba(180,140,100,0.06);--glow-3:rgba(120,160,120,0.06);}
+        body{background-color:var(--bg);color:var(--text-1);background-image:linear-gradient(to right,var(--bg-grid) 1px,transparent 1px),linear-gradient(to bottom,var(--bg-grid) 1px,transparent 1px);background-size:4rem 4rem;overflow-x:hidden;padding-bottom:env(safe-area-inset-bottom);transition:background-color 0.25s,color 0.25s;}
+        ::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:9999px;}::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-h);}
+        [v-cloak]{display:none!important;}
+        .glass-panel{background:var(--surface-1);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--border-1);box-shadow:var(--shadow);border-radius:var(--radius-panel);}
+        .active-card{border-color:var(--accent)!important;background:var(--active-bg)!important;box-shadow:0 0 20px var(--active-glow);}
+        .h-dvh-main{height:calc(100vh - 3rem);height:calc(100dvh - 3rem);}
+        .overflow-y-auto,.overflow-y-scroll{-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;}
+        *{-webkit-tap-highlight-color:transparent;}
+        button,a,label,[role="button"],select{touch-action:manipulation;}
+        @media(max-width:1023px){.mobile-left-panel{max-height:55vh;max-height:55dvh;}#app{height:auto;min-height:100dvh;}main{overflow-y:visible!important;gap:0.75rem;}main>section{padding:0.875rem;height:auto!important;overflow:visible!important;}.mobile-log-panel{height:380px;height:38dvh;}input:not([type=range]):not([type=checkbox]),select,textarea{font-size:16px!important;}header p{display:none;}}
+        *,*::before,*::after{transition:background-color 0.2s,border-color 0.2s,color 0.2s;}
+        img,svg,i{transition:none!important;}
+        .pill{display:inline-flex;align-items:center;gap:0.25rem;padding:0.125rem 0.5rem;border-radius:9999px;font-size:11px;font-weight:500;border:1px solid;white-space:nowrap;}
+        .pill-blue{color:#93c5fd;background:rgba(59,130,246,0.10);border-color:rgba(59,130,246,0.3);}
+        .pill-green{color:#86efac;background:rgba(34,197,94,0.10);border-color:rgba(34,197,94,0.3);}
+        .pill-amber{color:#fcd34d;background:rgba(245,158,11,0.10);border-color:rgba(245,158,11,0.3);}
+        .pill-red{color:#fca5a5;background:rgba(239,68,68,0.10);border-color:rgba(239,68,68,0.3);}
+        .pill-slate{color:#cbd5e1;background:rgba(100,116,139,0.10);border-color:rgba(100,116,139,0.3);}
+        .pill-indigo{color:#a5b4fc;background:rgba(99,102,241,0.10);border-color:rgba(99,102,241,0.3);}
+        .progress-bar{height:4px;background:var(--surface-3);border-radius:9999px;overflow:hidden;}
+        .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#60a5fa);transition:width 0.4s;}
+        .toast{position:fixed;bottom:max(1.5rem,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:9999;background:rgba(30,41,59,0.97);color:#f8fafc;padding:0.625rem 1.25rem;border-radius:999px;font-size:0.8125rem;border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 24px rgba(0,0,0,0.4);}
+        .poster{width:56px;height:84px;flex-shrink:0;border-radius:8px;background:linear-gradient(135deg,#1e293b,#0f172a);display:flex;align-items:center;justify-content:center;overflow:hidden;}
+        .poster img{width:100%;height:100%;object-fit:cover;}
+        .poster-lg{width:100px;height:150px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,#1e293b,#0f172a);display:flex;align-items:center;justify-content:center;overflow:hidden;}
+        .poster-lg img{width:100%;height:100%;object-fit:cover;}
+        .log-row{display:flex;gap:0.5rem;font-family:'JetBrains Mono',monospace;font-size:12px;padding:2px 0;line-height:1.45;}
+        .log-time{color:var(--text-4);flex-shrink:0;}
+        .log-info{color:var(--text-2);}
+        .log-warn{color:#fbbf24;}
+        .log-error{color:#f87171;}
+        .disk-bar{height:6px;background:var(--surface-3);border-radius:9999px;overflow:hidden;}
+        .disk-fill{height:100%;transition:width 0.5s;}
+        .toggle-switch{position:relative;width:36px;height:20px;flex-shrink:0;}
+        .toggle-switch input{opacity:0;width:0;height:0;}
+        .toggle-track{position:absolute;inset:0;border-radius:9999px;background:var(--surface-4);cursor:pointer;transition:background 0.2s;}
+        .toggle-track::before{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:white;top:3px;left:3px;transition:transform 0.2s;}
+        input:checked+.toggle-track{background:var(--accent);}
+        input:checked+.toggle-track::before{transform:translateX(16px);}
+    </style>
+</head>
+<body class="min-h-screen p-3 md:p-6 font-sans antialiased selection:bg-indigo-500/30">
+<div class="fixed inset-0 z-[-1] overflow-hidden pointer-events-none">
+    <div class="absolute -top-[10%] left-[10%] w-[500px] h-[500px] rounded-full blur-[140px] mix-blend-screen" style="background:var(--glow-1)"></div>
+    <div class="absolute top-[30%] right-[5%] w-[450px] h-[450px] rounded-full blur-[120px] mix-blend-screen" style="background:var(--glow-2)"></div>
+    <div class="absolute bottom-[-10%] left-[40%] w-[500px] h-[500px] rounded-full blur-[140px] mix-blend-screen" style="background:var(--glow-3)"></div>
+</div>
+
+<div id="app" v-cloak class="max-w-[1700px] mx-auto h-dvh-main flex flex-col">
+    <!-- Header -->
+    <header class="flex items-center justify-between mb-3 px-2 flex-shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg shadow-indigo-600/30">
+                <i class="ph-fill ph-film-strip text-white text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-base md:text-lg font-bold tracking-tight">YTS Auto Sync</h1>
+                <p class="text-[11px] text-slate-500">YTS RSS → qBittorrent → 字幕自动匹配</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <!-- Disk alert -->
+            <div v-if="disk.low_disk" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-red-500/40 bg-red-500/10 text-red-300 text-xs">
+                <i class="ph ph-warning"></i> 磁盘不足
+            </div>
+            <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs"
+                 :class="connected ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300' : 'border-red-500/30 bg-red-500/5 text-red-300'">
+                <span class="w-1.5 h-1.5 rounded-full" :class="connected ? 'bg-emerald-400' : 'bg-red-400'"></span>
+                {{ connected ? 'Live' : 'Offline' }}
+            </div>
+            <button @click="refreshRss" :disabled="refreshing"
+                class="px-3 py-1.5 text-xs rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1.5 disabled:opacity-50">
+                <i class="ph" :class="refreshing ? 'ph-spinner-gap animate-spin' : 'ph-arrows-clockwise'"></i>
+                <span class="hidden md:inline">刷新 RSS</span>
+            </button>
+            <button @click="toggleTheme" class="w-8 h-8 rounded-lg bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 flex items-center justify-center text-slate-400">
+                <i class="ph" :class="theme==='dark' ? 'ph-sun' : 'ph-moon'"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="grid grid-cols-1 lg:grid-cols-[280px_1fr_360px] gap-3 lg:gap-4 flex-1 overflow-hidden">
+
+        <!-- LEFT: 配置 + 磁盘 -->
+        <section class="mobile-left-panel glass-panel p-4 flex flex-col h-full overflow-y-auto border border-slate-700/60">
+            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                <i class="ph ph-sliders-horizontal"></i> 配置
+                <span v-if="configSaving" class="text-[10px] text-indigo-300 normal-case font-normal flex items-center gap-1">
+                    <i class="ph ph-spinner-gap animate-spin"></i> 保存中
+                </span>
+            </h2>
+
+            <div class="space-y-3 text-sm">
+                <!-- 画质 -->
+                <div>
+                    <label class="text-xs text-slate-400 mb-1.5 block">画质筛选</label>
+                    <div class="grid grid-cols-3 gap-1.5">
+                        <div v-for="q in ['720p','1080p','2160p']" :key="q"
+                             class="flex items-center justify-center text-xs py-1.5 rounded-lg border"
+                             :class="config.qualities?.includes(q) ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300' : 'bg-slate-800/40 border-slate-700/50 text-slate-400'">
+                            {{ q }}
+                        </div>
+                    </div>
+                    <p class="text-[10px] text-slate-600 mt-1">通过 .env 修改 YTS_QUALITIES</p>
+                </div>
+
+                <!-- 评分 + 体积 -->
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">最低评分</label>
+                        <input type="number" min="0" max="10" step="0.5"
+                               :value="config.min_rating"
+                               @change="patchConfig('min_rating', +$event.target.value)"
+                               class="w-full px-2.5 py-1.5 rounded-lg bg-slate-800/60 border border-slate-700/50 font-mono text-sm text-slate-100 focus:outline-none focus:border-indigo-500/60">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">最大体积 GB</label>
+                        <input type="number" min="1" max="100" step="1"
+                               :value="config.max_size_gb"
+                               @change="patchConfig('max_size_gb', +$event.target.value)"
+                               class="w-full px-2.5 py-1.5 rounded-lg bg-slate-800/60 border border-slate-700/50 font-mono text-sm text-slate-100 focus:outline-none focus:border-indigo-500/60">
+                    </div>
+                </div>
+
+                <!-- 开关组 -->
+                <div class="space-y-2 pt-2 border-t border-slate-800">
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300">自动下载</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" :checked="config.auto_download" @change="patchConfig('auto_download', $event.target.checked)">
+                            <span class="toggle-track"></span>
+                        </label>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300">自动字幕</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" :checked="config.auto_subtitle" @change="patchConfig('auto_subtitle', $event.target.checked)">
+                            <span class="toggle-track"></span>
+                        </label>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300">下载后整理</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" :checked="config.auto_organize" @change="patchConfig('auto_organize', $event.target.checked)">
+                            <span class="toggle-track"></span>
+                        </label>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300">轮询间隔</span>
+                        <span class="text-xs font-mono text-slate-400">{{ formatInterval(config.poll_interval) }}</span>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300">字幕语言</span>
+                        <span class="text-xs font-mono text-slate-400">{{ (config.sub_langs||[]).join('+') }}</span>
+                    </div>
+                </div>
+
+                <!-- 状态 -->
+                <div class="pt-2 border-t border-slate-800 space-y-2">
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300 flex items-center gap-1.5">
+                            <i class="ph ph-broadcast text-indigo-400"></i> Tracker 池
+                        </span>
+                        <span class="text-xs font-mono text-indigo-300">{{ config.tracker_count || 0 }} 个</span>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300 flex items-center gap-1.5">
+                            <i class="ph ph-cloud-arrow-down" :class="qbit.ok ? 'text-emerald-400' : 'text-red-400'"></i> qBittorrent
+                        </span>
+                        <span class="text-xs font-mono" :class="qbit.ok ? 'text-emerald-300' : 'text-red-300'">
+                            {{ qbit.ok ? qbit.version : (qbit.error?.slice(0,16)+'…' || 'down') }}
+                        </span>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300 flex items-center gap-1.5">
+                            <i class="ph ph-lock text-slate-400"></i> 认证
+                        </span>
+                        <span class="pill" :class="config.auth_enabled ? 'pill-green' : 'pill-slate'">
+                            {{ config.auth_enabled ? '已启用' : '关闭' }}
+                        </span>
+                    </div>
+                    <div class="flex items-center justify-between py-1">
+                        <span class="text-xs text-slate-300 flex items-center gap-1.5">
+                            <i class="ph ph-paper-plane-tilt text-slate-400"></i> Telegram
+                        </span>
+                        <span class="pill" :class="config.telegram_enabled ? 'pill-green' : 'pill-slate'">
+                            {{ config.telegram_enabled ? '已启用' : '关闭' }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- 统计 -->
+                <div class="pt-2 border-t border-slate-800 space-y-1">
+                    <h3 class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">统计</h3>
+                    <div v-for="s in stats" :key="s.label" class="flex items-center justify-between text-xs">
+                        <span class="text-slate-400">{{ s.label }}</span>
+                        <span class="font-mono" :class="s.color">{{ s.value }}</span>
+                    </div>
+                </div>
+
+                <!-- 磁盘 -->
+                <div class="pt-2 border-t border-slate-800 space-y-2">
+                    <h3 class="text-[10px] uppercase tracking-wider text-slate-500 mb-1 flex items-center gap-1.5">
+                        <i class="ph ph-hard-drive"></i> 磁盘
+                    </h3>
+                    <div v-for="(d, name) in disk.disks" :key="name" class="space-y-1">
+                        <div class="flex items-center justify-between text-[11px]">
+                            <span class="text-slate-400">{{ name }}</span>
+                            <span class="font-mono" :class="d.free_gb < 5 ? 'text-red-300' : 'text-slate-400'">
+                                {{ d.error ? '不可用' : (d.free_gb + 'G 可用') }}
+                            </span>
+                        </div>
+                        <div v-if="!d.error" class="disk-bar">
+                            <div class="disk-fill" :style="{ width: d.pct + '%', background: d.pct > 90 ? '#ef4444' : d.pct > 75 ? '#f59e0b' : '#6366f1' }"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 备份按钮 -->
+                <div class="pt-2 border-t border-slate-800">
+                    <button @click="doBackup" class="w-full py-1.5 text-xs rounded-lg bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 text-slate-400 hover:text-slate-200 flex items-center justify-center gap-1.5">
+                        <i class="ph ph-database"></i> 备份数据库
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- MIDDLE: 影片队列 -->
+        <section class="glass-panel p-4 flex flex-col h-full overflow-hidden border border-slate-700/60">
+            <div class="flex items-center justify-between mb-3 flex-shrink-0 gap-2">
+                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2 flex-shrink-0">
+                    <i class="ph ph-stack"></i> 影片队列 <span class="text-slate-500 font-normal normal-case">({{ filteredMovies.length }})</span>
+                </h2>
+                <!-- 搜索框 -->
+                <div class="flex-1 min-w-0 relative">
+                    <i class="ph ph-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none"></i>
+                    <input v-model="searchQ" placeholder="搜索标题 / 年份 / 类型…"
+                           class="w-full pl-7 pr-3 py-1.5 rounded-lg bg-slate-800/60 border border-slate-700/50 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60">
+                </div>
+                <!-- 排序 -->
+                <select v-model="sortBy" class="px-2 py-1.5 text-xs rounded-lg bg-slate-800/60 border border-slate-700/50 text-slate-300 focus:outline-none flex-shrink-0">
+                    <option value="added">时间↓</option>
+                    <option value="rating">评分↓</option>
+                    <option value="size">大小↓</option>
+                </select>
+            </div>
+            <!-- 状态过滤 -->
+            <div class="flex gap-1 mb-3 flex-shrink-0 flex-wrap">
+                <button v-for="f in filters" :key="f.k"
+                        @click="filter = f.k"
+                        class="px-2 py-1 text-[11px] rounded-md border"
+                        :class="filter===f.k
+                            ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300'
+                            : 'bg-slate-800/40 border-slate-700/40 text-slate-400 hover:text-slate-200'">
+                    {{ f.label }}
+                    <span class="text-slate-500">{{ counts[f.k] || 0 }}</span>
+                </button>
+            </div>
+
+            <div class="overflow-y-auto space-y-2 pr-1 flex-1">
+                <div v-for="m in filteredMovies" :key="m.imdb_id"
+                     @click="selectMovie(m)"
+                     class="rounded-2xl p-3 border bg-slate-900/40 border-slate-800/70 hover:border-slate-700 cursor-pointer flex gap-3 group"
+                     :class="{ 'active-card': activeId === m.imdb_id }">
+                    <div class="poster">
+                        <img v-if="m.poster_url" :src="m.poster_url" :alt="m.title" loading="lazy">
+                        <i v-else class="ph ph-film-slate text-2xl text-slate-700"></i>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-start justify-between gap-2 mb-1">
+                            <h3 class="text-sm font-medium text-slate-100 truncate">{{ shortTitle(m.title) }}</h3>
+                            <span class="pill flex-shrink-0" :class="statusPill(m.status)">{{ statusLabel(m.status) }}</span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-400 font-mono mb-1.5">
+                            <span v-if="m.year">{{ m.year }}</span>
+                            <span v-if="m.quality">{{ m.quality }}</span>
+                            <span v-if="m.size_bytes">{{ formatSize(m.size_bytes) }}</span>
+                            <span v-if="m.rating" class="text-amber-300">★ {{ m.rating }}</span>
+                            <span v-if="m.genres" class="text-slate-500 truncate max-w-[120px]">{{ m.genres }}</span>
+                        </div>
+                        <div v-if="liveOf(m).progress != null" class="space-y-0.5">
+                            <div class="progress-bar">
+                                <div class="progress-fill" :style="{ width: (liveOf(m).progress * 100) + '%' }"></div>
+                            </div>
+                            <div class="flex items-center justify-between text-[10px] font-mono text-slate-500">
+                                <span>{{ Math.round(liveOf(m).progress * 100) }}%</span>
+                                <span v-if="liveOf(m).dlspeed">↓ {{ formatSpeed(liveOf(m).dlspeed) }}</span>
+                                <span v-if="liveOf(m).num_seeds != null">S{{ liveOf(m).num_seeds }}/L{{ liveOf(m).num_leechs }}</span>
+                                <span v-if="liveOf(m).eta && liveOf(m).eta > 0 && liveOf(m).eta < 8640000">ETA {{ formatEta(liveOf(m).eta) }}</span>
+                            </div>
+                        </div>
+                        <div v-if="m.subtitle_status && m.subtitle_status !== 'pending'" class="flex items-center gap-1.5 mt-1 text-[11px]">
+                            <i class="ph" :class="subIcon(m.subtitle_status)"></i>
+                            <span :class="subColor(m.subtitle_status)">{{ subLabel(m.subtitle_status) }}</span>
+                        </div>
+                    </div>
+                    <div class="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button v-if="m.status==='discovered'||m.status==='skipped'||m.status==='error'"
+                                @click.stop="downloadMovie(m)" title="下载"
+                                class="w-7 h-7 rounded-md bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 flex items-center justify-center">
+                            <i class="ph ph-download-simple text-sm"></i>
+                        </button>
+                        <button v-if="m.final_video"
+                                @click.stop="refetchSubtitle(m)" title="重抓字幕"
+                                class="w-7 h-7 rounded-md bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 flex items-center justify-center">
+                            <i class="ph ph-translate text-sm"></i>
+                        </button>
+                        <button @click.stop="removeMovie(m)" title="移除"
+                                class="w-7 h-7 rounded-md bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-300 border border-slate-700 hover:border-red-500/40 flex items-center justify-center">
+                            <i class="ph ph-x text-sm"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="filteredMovies.length === 0" class="text-center py-12 text-slate-600 border border-dashed border-slate-800 rounded-2xl">
+                    <i class="ph ph-magnifying-glass text-3xl mb-2 block"></i>
+                    <p class="text-sm">{{ searchQ ? '无匹配结果' : '无影片' }}</p>
+                    <p class="text-xs mt-1">{{ searchQ ? '换个关键词试试' : '点右上 "刷新 RSS" 立即抓取' }}</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT: 详情 + 日志 -->
+        <section class="glass-panel p-4 flex flex-col h-full overflow-hidden border border-slate-700/60">
+            <!-- Tab 切换 -->
+            <div class="flex gap-1 mb-3 flex-shrink-0">
+                <button @click="rightTab='detail'"
+                    class="px-3 py-1 text-[11px] rounded-md border"
+                    :class="rightTab==='detail' ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300' : 'bg-slate-800/40 border-slate-700/40 text-slate-400'">
+                    <i class="ph ph-info"></i> 详情
+                </button>
+                <button @click="rightTab='log'"
+                    class="px-3 py-1 text-[11px] rounded-md border"
+                    :class="rightTab==='log' ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300' : 'bg-slate-800/40 border-slate-700/40 text-slate-400'">
+                    <i class="ph ph-terminal-window"></i> 日志
+                    <span v-if="rightTab!=='log' && unreadLogs > 0" class="ml-1 px-1 py-0 rounded-full bg-indigo-500/30 text-indigo-300 text-[10px]">{{ unreadLogs }}</span>
+                </button>
+                <button v-if="rightTab==='log'" @click="logs=[];unreadLogs=0" class="ml-auto text-slate-500 hover:text-slate-300 text-xs"><i class="ph ph-eraser"></i></button>
+                <button v-if="rightTab==='log'" @click="autoScroll=!autoScroll"
+                    class="px-2 py-0.5 text-[11px] rounded border"
+                    :class="autoScroll ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300' : 'bg-slate-800/40 border-slate-700/40 text-slate-400'">
+                    Auto
+                </button>
+            </div>
+
+            <!-- 详情面板 -->
+            <div v-if="rightTab==='detail'" class="flex-1 overflow-y-auto">
+                <div v-if="!activeMovie" class="flex flex-col items-center justify-center h-full text-slate-600">
+                    <i class="ph ph-cursor-click text-4xl mb-3"></i>
+                    <p class="text-sm">点击左侧影片查看详情</p>
+                </div>
+                <div v-else class="space-y-4">
+                    <!-- 海报 + 基本信息 -->
+                    <div class="flex gap-4">
+                        <div class="poster-lg">
+                            <img v-if="activeMovie.poster_url" :src="activeMovie.poster_url" :alt="activeMovie.title" loading="lazy">
+                            <i v-else class="ph ph-film-slate text-3xl text-slate-700"></i>
+                        </div>
+                        <div class="flex-1 min-w-0 space-y-2">
+                            <div>
+                                <h3 class="text-sm font-semibold text-slate-100 leading-snug">{{ shortTitle(activeMovie.title) }}</h3>
+                                <p class="text-[11px] text-slate-500 mt-0.5">{{ activeMovie.year }} · {{ activeMovie.quality }} · {{ formatSize(activeMovie.size_bytes) }}</p>
+                            </div>
+                            <div class="flex flex-wrap gap-1.5">
+                                <span class="pill" :class="statusPill(activeMovie.status)">{{ statusLabel(activeMovie.status) }}</span>
+                                <span v-if="activeMovie.rating" class="pill pill-amber">★ {{ activeMovie.rating }}</span>
+                            </div>
+                            <div v-if="activeMovie.genres" class="text-[11px] text-slate-400">{{ activeMovie.genres }}</div>
+                            <div class="flex gap-2">
+                                <a v-if="activeMovie.imdb_url" :href="activeMovie.imdb_url" target="_blank"
+                                   class="text-[11px] text-indigo-300 hover:text-indigo-200 flex items-center gap-1">
+                                    <i class="ph ph-arrow-square-out"></i> IMDB
+                                </a>
+                                <a v-if="activeMovie.yts_url" :href="activeMovie.yts_url" target="_blank"
+                                   class="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1">
+                                    <i class="ph ph-arrow-square-out"></i> YTS
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 剧情简介 -->
+                    <div v-if="activeMovie.synopsis" class="text-[12px] text-slate-400 leading-relaxed bg-slate-900/40 rounded-xl p-3 border border-slate-800">
+                        {{ activeMovie.synopsis }}
+                    </div>
+
+                    <!-- 进度 -->
+                    <div v-if="liveOf(activeMovie).progress != null" class="space-y-1.5 bg-slate-900/40 rounded-xl p-3 border border-slate-800">
+                        <div class="flex items-center justify-between text-xs font-mono text-slate-400">
+                            <span>{{ Math.round(liveOf(activeMovie).progress * 100) }}%</span>
+                            <span>↓ {{ formatSpeed(liveOf(activeMovie).dlspeed || 0) }}</span>
+                            <span>↑ {{ formatSpeed(liveOf(activeMovie).upspeed || 0) }}</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" :style="{ width: (liveOf(activeMovie).progress * 100) + '%' }"></div>
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] font-mono text-slate-500">
+                            <span>S {{ liveOf(activeMovie).num_seeds || 0 }} / L {{ liveOf(activeMovie).num_leechs || 0 }}</span>
+                            <span v-if="liveOf(activeMovie).eta > 0 && liveOf(activeMovie).eta < 8640000">
+                                ETA {{ formatEta(liveOf(activeMovie).eta) }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- 字幕 -->
+                    <div class="bg-slate-900/40 rounded-xl p-3 border border-slate-800 space-y-1.5">
+                        <div class="flex items-center gap-2 text-xs">
+                            <i class="ph" :class="subIcon(activeMovie.subtitle_status)"></i>
+                            <span :class="subColor(activeMovie.subtitle_status)">{{ subLabel(activeMovie.subtitle_status || 'pending') }}</span>
+                        </div>
+                        <div v-if="activeMovie.subtitle_path" class="font-mono text-[11px] text-slate-500 truncate">
+                            {{ activeMovie.subtitle_path.split('/').pop() }}
+                        </div>
+                    </div>
+
+                    <!-- 文件路径 -->
+                    <div v-if="activeMovie.final_video" class="bg-slate-900/40 rounded-xl p-3 border border-slate-800">
+                        <p class="text-[10px] text-slate-500 mb-1">文件路径</p>
+                        <p class="font-mono text-[11px] text-slate-400 break-all">{{ activeMovie.final_video }}</p>
+                    </div>
+
+                    <!-- 备注 -->
+                    <div v-if="activeMovie.note" class="bg-red-500/5 rounded-xl p-3 border border-red-500/20">
+                        <p class="text-[10px] text-red-400 mb-1">备注</p>
+                        <p class="text-[11px] text-red-300">{{ activeMovie.note }}</p>
+                    </div>
+
+                    <!-- 操作按钮 -->
+                    <div class="flex flex-wrap gap-2 pt-1">
+                        <button v-if="activeMovie.status==='discovered'||activeMovie.status==='skipped'||activeMovie.status==='error'"
+                                @click="downloadMovie(activeMovie)"
+                                class="flex-1 py-2 text-xs rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 flex items-center justify-center gap-1.5">
+                            <i class="ph ph-download-simple"></i> 下载
+                        </button>
+                        <button v-if="activeMovie.final_video"
+                                @click="refetchSubtitle(activeMovie)"
+                                class="flex-1 py-2 text-xs rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1.5">
+                            <i class="ph ph-translate"></i> 重抓字幕
+                        </button>
+                        <button @click="removeMovie(activeMovie)"
+                                class="flex-1 py-2 text-xs rounded-xl bg-slate-800 hover:bg-red-500/15 text-slate-400 hover:text-red-300 border border-slate-700 hover:border-red-500/30 flex items-center justify-center gap-1.5">
+                            <i class="ph ph-trash"></i> 移除
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 日志面板 -->
+            <div v-if="rightTab==='log'" class="flex-1 overflow-y-auto bg-slate-950/60 rounded-xl p-3 border border-slate-800/60" ref="logBox">
+                <div v-for="(l, i) in logs" :key="i" class="log-row">
+                    <span class="log-time">{{ l.time }}</span>
+                    <span :class="'log-' + l.level">{{ l.text }}</span>
+                </div>
+                <div v-if="logs.length === 0" class="text-slate-600 italic text-xs flex items-center gap-2">
+                    <i class="ph ph-circle-notch animate-spin"></i> 等待事件…
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } = Vue;
+
+createApp({
+    setup() {
+        const theme = ref(localStorage.getItem('yts-theme') || 'dark');
+        const movies = ref([]);
+        const live = reactive({});
+        const logs = ref([]);
+        const config = reactive({});
+        const qbit = reactive({ ok: false });
+        const disk = reactive({ disks: {}, low_disk: false });
+        const connected = ref(false);
+        const refreshing = ref(false);
+        const activeId = ref(null);
+        const filter = ref('all');
+        const searchQ = ref('');
+        const sortBy = ref('added');
+        const autoScroll = ref(true);
+        const toastMsg = ref('');
+        const logBox = ref(null);
+        const configSaving = ref(false);
+        const rightTab = ref('log');
+        const unreadLogs = ref(0);
+
+        const filters = [
+            { k: 'all', label: '全部' },
+            { k: 'downloading', label: '下载中' },
+            { k: 'done', label: '完成' },
+            { k: 'discovered', label: '待入队' },
+            { k: 'error', label: '错误' },
+        ];
+
+        const counts = computed(() => {
+            const c = { all: movies.value.length };
+            for (const m of movies.value) c[m.status] = (c[m.status] || 0) + 1;
+            return c;
+        });
+
+        const filteredMovies = computed(() => {
+            let list = filter.value === 'all' ? movies.value : movies.value.filter(m => m.status === filter.value);
+            if (searchQ.value.trim()) {
+                const q = searchQ.value.toLowerCase();
+                list = list.filter(m =>
+                    shortTitle(m.title).toLowerCase().includes(q) ||
+                    String(m.year || '').includes(q) ||
+                    (m.genres || '').toLowerCase().includes(q)
+                );
+            }
+            if (sortBy.value === 'rating') list = [...list].sort((a, b) => (b.rating || 0) - (a.rating || 0));
+            else if (sortBy.value === 'size') list = [...list].sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
+            return list;
+        });
+
+        const activeMovie = computed(() => {
+            if (!activeId.value) return null;
+            return movies.value.find(m => m.imdb_id === activeId.value) || null;
+        });
+
+        const stats = computed(() => [
+            { label: '总计',   value: movies.value.length, color: 'text-slate-200' },
+            { label: '下载中', value: counts.value.downloading || 0, color: 'text-blue-300' },
+            { label: '完成',   value: counts.value.done || 0, color: 'text-emerald-300' },
+            { label: '跳过',   value: counts.value.skipped || 0, color: 'text-slate-400' },
+            { label: '错误',   value: counts.value.error || 0, color: 'text-red-300' },
+        ]);
+
+        function applyTheme(t) {
+            document.documentElement.setAttribute('data-theme', t);
+            localStorage.setItem('yts-theme', t);
+        }
+        function toggleTheme() { theme.value = theme.value === 'dark' ? 'light' : 'dark'; applyTheme(theme.value); }
+
+        function toast(m) { toastMsg.value = m; setTimeout(() => toastMsg.value = '', 2500); }
+
+        function pad(n) { return String(n).padStart(2, '0'); }
+        function nowHMS() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+        function pushLog(level, text) {
+            logs.value.push({ time: nowHMS(), level, text });
+            if (logs.value.length > 500) logs.value.splice(0, logs.value.length - 500);
+            if (rightTab.value !== 'log') unreadLogs.value++;
+            if (autoScroll.value && rightTab.value === 'log') nextTick(() => { if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight; });
+        }
+
+        watch(rightTab, v => { if (v === 'log') unreadLogs.value = 0; });
+
+        function liveOf(m) {
+            const l = live[m.imdb_id];
+            if (l) return l;
+            if (m.status === 'done' || m.status === 'seeding') return { progress: 1 };
+            return {};
+        }
+
+        function selectMovie(m) {
+            activeId.value = m.imdb_id;
+            rightTab.value = 'detail';
+        }
+
+        function shortTitle(t) {
+            if (!t) return '';
+            return t.replace(/\s*\[[^\]]*\]\s*/g, ' ').replace(/\s+/, ' ').trim();
+        }
+        function formatSize(b) {
+            if (!b) return '';
+            const u = ['B','KB','MB','GB','TB']; let i=0, n=b;
+            while (n >= 1024 && i < u.length-1) { n /= 1024; i++; }
+            return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+        }
+        function formatSpeed(b) { return formatSize(b) + '/s'; }
+        function formatEta(s) {
+            if (!s) return '';
+            const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+            if (h) return `${h}h${pad(m)}m`;
+            if (m) return `${m}m${pad(sec)}s`;
+            return `${sec}s`;
+        }
+        function formatInterval(s) {
+            if (!s) return '';
+            return s >= 60 ? Math.round(s/60) + ' min' : s + ' s';
+        }
+        function statusLabel(s) {
+            return ({ discovered:'待入队', queued:'排队', downloading:'下载中', seeding:'做种', paused:'已暂停', done:'完成', error:'错误', skipped:'跳过' })[s] || s;
+        }
+        function statusPill(s) {
+            return ({ discovered:'pill-slate', queued:'pill-amber', downloading:'pill-blue', seeding:'pill-indigo', paused:'pill-amber', done:'pill-green', error:'pill-red', skipped:'pill-slate' })[s] || 'pill-slate';
+        }
+        function subIcon(s) {
+            return ({ searching:'ph-spinner-gap animate-spin', found:'ph-check-circle', missing:'ph-prohibit', error:'ph-warning-circle' })[s] || 'ph-translate';
+        }
+        function subColor(s) {
+            return ({ searching:'text-indigo-300', found:'text-emerald-300', missing:'text-slate-500', error:'text-red-300' })[s] || 'text-slate-400';
+        }
+        function subLabel(s) {
+            return ({ pending:'未处理', searching:'抓取字幕中', found:'字幕已就位', missing:'未找到字幕', error:'字幕抓取出错' })[s] || s;
+        }
+
+        async function loadConfig() {
+            try { Object.assign(config, await fetch('/api/config').then(r => r.json())); }
+            catch (e) { pushLog('error', 'config: ' + e); }
+        }
+        async function loadQbit() {
+            try { Object.assign(qbit, await fetch('/api/qbit/health').then(r => r.json())); }
+            catch (e) { qbit.ok = false; qbit.error = e + ''; }
+        }
+        async function loadDisk() {
+            try { Object.assign(disk, await fetch('/api/disk').then(r => r.json())); }
+            catch (e) {}
+        }
+        async function refreshRss() {
+            refreshing.value = true;
+            try {
+                const j = await fetch('/api/rss/refresh', { method: 'POST' }).then(r => r.json());
+                toast(`抓取 ${j.fetched} · 新增 ${j.new} · 入队 ${j.queued}${j.errors?.length ? ' · ⚠️错误:'+j.errors[0] : ''}`);
+            } catch (e) { toast('RSS 抓取失败'); }
+            finally { refreshing.value = false; }
+        }
+        async function patchConfig(field, value) {
+            configSaving.value = true;
+            try {
+                await fetch('/api/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ [field]: value }) });
+                config[field === 'min_rating' ? 'min_rating' : field === 'max_size_gb' ? 'max_size_gb' : field] = value;
+                toast('配置已保存');
+            } catch (e) { toast('保存失败'); }
+            finally { configSaving.value = false; }
+        }
+        async function downloadMovie(m) {
+            try { await fetch(`/api/movies/${m.imdb_id}/download`, { method: 'POST' }); toast('已加入队列'); }
+            catch (e) { toast('入队失败'); }
+        }
+        async function refetchSubtitle(m) {
+            try { await fetch(`/api/movies/${m.imdb_id}/subtitle`, { method: 'POST' }); toast('字幕抓取已触发'); }
+            catch (e) { toast('字幕请求失败'); }
+        }
+        async function removeMovie(m) {
+            if (!confirm(`移除 "${shortTitle(m.title)}"？`)) return;
+            try {
+                await fetch(`/api/movies/${m.imdb_id}?delete_files=false`, { method: 'DELETE' });
+                movies.value = movies.value.filter(x => x.imdb_id !== m.imdb_id);
+                delete live[m.imdb_id];
+                if (activeId.value === m.imdb_id) activeId.value = null;
+                toast('已移除');
+            } catch (e) { toast('移除失败'); }
+        }
+        async function doBackup() {
+            try {
+                const j = await fetch('/api/backup', { method: 'POST' }).then(r => r.json());
+                toast('备份完成: ' + j.file);
+            } catch (e) { toast('备份失败'); }
+        }
+
+        function upsertMovie(m) {
+            const i = movies.value.findIndex(x => x.imdb_id === m.imdb_id);
+            if (i >= 0) Object.assign(movies.value[i], m);
+            else movies.value.unshift(m);
+        }
+        function updateMovieField(imdb_id, patch) {
+            const i = movies.value.findIndex(x => x.imdb_id === imdb_id);
+            if (i >= 0) Object.assign(movies.value[i], patch);
+        }
+
+        let es = null;
+        function connect() {
+            if (es) try { es.close(); } catch(e) {}
+            es = new EventSource('/api/stream');
+            es.addEventListener('snapshot', e => {
+                connected.value = true;
+                const d = JSON.parse(e.data);
+                movies.value = d.movies || [];
+                pushLog('info', `已连接 · ${movies.value.length} 条记录`);
+            });
+            es.addEventListener('movie.new', e => {
+                const m = JSON.parse(e.data).movie;
+                upsertMovie(m);
+                pushLog('info', `新片 → ${shortTitle(m.title)}`);
+            });
+            es.addEventListener('movie.queued', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { status: 'downloading', qbit_hash: d.qbit_hash });
+                pushLog('info', `已入队 → ${d.imdb_id}`);
+            });
+            es.addEventListener('movie.updated', e => { const d = JSON.parse(e.data); updateMovieField(d.imdb_id, d); });
+            es.addEventListener('movie.progress', e => {
+                const d = JSON.parse(e.data);
+                live[d.imdb_id] = d;
+                updateMovieField(d.imdb_id, { status: d.status });
+            });
+            es.addEventListener('movie.done', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { status: 'done' });
+                const m = movies.value.find(x => x.imdb_id === d.imdb_id);
+                pushLog('info', `下载完成 → ${shortTitle(m?.title || d.imdb_id)}`);
+            });
+            es.addEventListener('movie.organized', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { final_video: d.path });
+            });
+            es.addEventListener('sub.searching', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { subtitle_status: 'searching' });
+                pushLog('info', `抓字幕… ${d.imdb_id}`);
+            });
+            es.addEventListener('sub.found', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { subtitle_status: 'found', subtitle_path: d.path });
+                pushLog('info', `字幕 ✓ ${d.path.split('/').pop()}`);
+            });
+            es.addEventListener('sub.missing', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { subtitle_status: 'missing' });
+                pushLog('warn', `字幕缺失 ${d.imdb_id}`);
+            });
+            es.addEventListener('sub.error', e => {
+                const d = JSON.parse(e.data);
+                updateMovieField(d.imdb_id, { subtitle_status: 'error' });
+                pushLog('error', `字幕错误 ${d.imdb_id}: ${d.error}`);
+            });
+            es.addEventListener('rss.polled', e => {
+                const d = JSON.parse(e.data).summary;
+                const errStr = d.errors?.length ? ` ⚠${d.errors[0].slice(0,40)}` : '';
+                pushLog(d.errors?.length ? 'warn' : 'info', `RSS · 抓取${d.fetched} 新${d.new} 入队${d.queued}${errStr}`);
+            });
+            es.onerror = () => {
+                connected.value = false;
+                pushLog('warn', '连接断开，3s 后重连…');
+                try { es.close(); } catch(e) {}
+                setTimeout(connect, 3000);
+            };
+        }
+
+        onMounted(async () => {
+            applyTheme(theme.value);
+            await Promise.all([loadConfig(), loadQbit(), loadDisk()]);
+            connect();
+            setInterval(() => { loadQbit(); loadDisk(); }, 30000);
+        });
+        onBeforeUnmount(() => { if (es) try { es.close(); } catch(e) {} });
+
+        return {
+            theme, toggleTheme,
+            movies, live, logs, config, qbit, disk, connected,
+            refreshing, refreshRss, downloadMovie, refetchSubtitle, removeMovie,
+            activeId, activeMovie, selectMovie,
+            filter, filters, counts, filteredMovies, stats,
+            searchQ, sortBy,
+            autoScroll, logBox, rightTab, unreadLogs,
+            toastMsg, configSaving, patchConfig, doBackup,
+            shortTitle, formatSize, formatSpeed, formatEta, formatInterval,
+            statusLabel, statusPill, subIcon, subColor, subLabel,
+            liveOf,
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
