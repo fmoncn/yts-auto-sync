@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     # 开关：False=不翻译（依赖外部字幕源）
     TRANS_ENABLED: bool = True
 
+    # ── Cloud upload (rclone WebDAV / AList) ──────────────────────
+    CLOUD_UPLOAD_ENABLED: bool = False
+    CLOUD_WEBDAV_URL: str = "http://127.0.0.1:5244/dav"
+    CLOUD_WEBDAV_USER: str = "admin"
+    CLOUD_WEBDAV_PASS: str = ""
+    CLOUD_DEST_DIR: str = "电影"   # remote path inside WebDAV root
+
     AUTO_DOWNLOAD: bool = False
     MIN_IMDB_RATING: float = 6.5
     MAX_SIZE_GB: float = 12.0

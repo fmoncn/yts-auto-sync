@@ -25,6 +25,7 @@ import qbit_client
 import tracker_pool
 import subtitle_fetcher
 from subtitle_fetcher import extract_bundled_subs
+import cloud_uploader
 import notifier
 
 
@@ -238,6 +239,9 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
     if settings.AUTO_SUBTITLE and new_video:
         await _fetch_sub(movie["imdb_id"], new_video)
 
+    if settings.CLOUD_UPLOAD_ENABLED and new_video:
+        asyncio.create_task(_upload_movie(movie["imdb_id"], new_video.parent))
+
     if settings.DELETE_QBIT_AFTER_ORGANIZE and movie.get("qbit_hash"):
         # Safety: only delete files from qBit if organize actually succeeded.
         # If organize failed (new_video is None), keep files so nothing is lost.
@@ -253,6 +257,13 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
             rss_watcher._publish({"type": "movie.unseeded", "imdb_id": movie["imdb_id"]})
         except Exception as e:
             log_event("warn", f"qBit remove: {repr(e)}", movie["imdb_id"])
+
+
+async def _upload_movie(imdb_id: str, movie_dir: Path) -> None:
+    log_event("info", "upload: starting...", imdb_id)
+    ok = await cloud_uploader.upload_movie(movie_dir, imdb_id)
+    if ok:
+        asyncio.create_task(notifier.notify("上传完成", movie_dir.name))
 
 
 async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
