@@ -1,7 +1,7 @@
-"""Chinese subtitle fetcher: subliminal + subdl.com + zimuku (concurrent race)."""
+"""Chinese subtitle: MKV embedded Chinese → AI translate English fallback."""
 from __future__ import annotations
 import asyncio
-import os
+import json
 import re
 import zipfile
 from pathlib import Path
@@ -11,33 +11,325 @@ from config import settings
 from store import log_event
 
 
+# ────────────────────────────────────────────────────────────────
+# Public entry point
+# ────────────────────────────────────────────────────────────────
 async def fetch_for_video(video_path: Path, imdb_id: str) -> Optional[Path]:
-    """Race multiple subtitle sources; return first successful .srt/.ass path."""
+    """Return a Chinese subtitle file path, or None."""
     if not video_path.exists():
         log_event("warn", f"subtitle: video missing {video_path}", imdb_id)
         return None
 
-    tasks = [
-        asyncio.create_task(_try_subliminal(video_path, imdb_id)),
-        asyncio.create_task(_try_subdl(video_path, imdb_id)),
-        asyncio.create_task(_try_zimuku(video_path, imdb_id)),
-    ]
-    result = None
-    try:
-        for fut in asyncio.as_completed(tasks):
-            res = await fut
-            if res:
-                result = res
-                break
-    finally:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-    return result
+    # Step 1: check if Chinese sub already exists alongside the video
+    bundled = _find_existing_chs(video_path.parent)
+    if bundled:
+        log_event("info", f"subtitle: using existing CHS sub {bundled.name}", imdb_id)
+        return bundled
+
+    # Step 2: extract from MKV — Chinese directly, or English for translation
+    await asyncio.to_thread(extract_subs_from_mkv, video_path, imdb_id)
+
+    # Check again after MKV extraction (may have found Chinese)
+    bundled = _find_existing_chs(video_path.parent)
+    if bundled:
+        return bundled
+
+    # Step 3: translate extracted English SRT → Chinese
+    if settings.TRANS_ENABLED:
+        eng = _find_english_srt(video_path.parent)
+        if eng:
+            log_event("info", f"subtitle: translating {eng.name} → zh", imdb_id)
+            return await _translate_srt(eng, video_path, imdb_id)
+
+    return None
 
 
 # ────────────────────────────────────────────────────────────────
-# 1. subliminal
+# P0 helpers: detect existing Chinese subtitle files
+# ────────────────────────────────────────────────────────────────
+_CHS_KEYWORDS = re.compile(
+    r"(chinese[._\-]?(simplified|simp|chs|zhs|zh[-_]s|sc)|"
+    r"简体|chs|zhs|zh[-_]s|sc|chinese)",
+    re.I,
+)
+_ENG_KEYWORDS = re.compile(
+    r"(english|eng\b|en\b)",
+    re.I,
+)
+_SUB_EXTS = {".srt", ".ass", ".ssa", ".vtt"}
+
+
+def _find_existing_chs(directory: Path) -> Optional[Path]:
+    """Return a Chinese subtitle file in directory if present."""
+    if not directory.is_dir():
+        return None
+    for f in sorted(directory.iterdir()):
+        if f.suffix.lower() in _SUB_EXTS:
+            stem = f.stem.lower()
+            if _CHS_KEYWORDS.search(stem) or stem.endswith(".zh") or stem.endswith(".chs"):
+                return f
+    return None
+
+
+def _find_english_srt(directory: Path) -> Optional[Path]:
+    """Find the best English subtitle in directory (prefer .srt)."""
+    if not directory.is_dir():
+        return None
+    # Prefer MKV-extracted English srt
+    for f in sorted(directory.iterdir()):
+        if f.name.endswith(".extracted_eng.srt"):
+            return f
+    candidates = []
+    for f in sorted(directory.iterdir()):
+        if f.suffix.lower() in _SUB_EXTS:
+            stem = f.stem.lower()
+            if _ENG_KEYWORDS.search(stem):
+                candidates.append(f)
+    # Prefer .srt over .ass
+    for f in candidates:
+        if f.suffix.lower() == ".srt":
+            return f
+    return candidates[0] if candidates else None
+
+
+def extract_bundled_subs(torrent_root: Path, dest_dir: Path) -> list[Path]:
+    """
+    Called from organize_to_library to extract subtitle files from the
+    torrent folder (including Subs/ subfolder) into dest_dir.
+
+    Returns list of copied subtitle paths.
+    """
+    if not torrent_root.exists():
+        return []
+    copied: list[Path] = []
+    for sub in torrent_root.rglob("*"):
+        if sub.suffix.lower() not in _SUB_EXTS or not sub.is_file():
+            continue
+        dest = dest_dir / sub.name
+        if dest.resolve() == sub.resolve():
+            copied.append(dest)
+            continue
+        try:
+            import shutil
+            shutil.copy2(str(sub), str(dest))
+            copied.append(dest)
+        except Exception:
+            pass
+    return copied
+
+
+# ────────────────────────────────────────────────────────────────
+# P0.5: extract embedded subtitles from MKV
+# ────────────────────────────────────────────────────────────────
+_CHS_LANG = re.compile(r"(chi.*simpl|zho.*simpl|chs|zh.*hans)", re.I)
+_CHT_LANG = re.compile(r"(chi|zho|chinese)", re.I)
+_ENG_LANG  = re.compile(r"(eng)", re.I)
+
+def _ffprobe_subs(video_path: Path) -> list[dict]:
+    """Return list of subtitle stream info dicts from ffprobe."""
+    import subprocess, json as _json
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_streams", "-select_streams", "s", str(video_path)],
+            capture_output=True, timeout=15
+        )
+        return _json.loads(r.stdout).get("streams", [])
+    except Exception:
+        return []
+
+def _ffmpeg_extract(video_path: Path, stream_idx: int, out_path: Path) -> bool:
+    """Extract a single subtitle stream to out_path (.srt)."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path),
+             "-map", f"0:{stream_idx}", str(out_path)],
+            capture_output=True, timeout=60
+        )
+        return out_path.exists() and out_path.stat().st_size > 100
+    except Exception:
+        return False
+
+def extract_subs_from_mkv(video_path: Path, imdb_id: str) -> Optional[Path]:
+    """
+    Extract embedded subtitles from MKV.
+    Priority: CHS simplified > eng (stored for AI translation).
+    Returns CHS path if found directly, else None (eng stored as .extracted_eng.srt).
+    """
+    if video_path.suffix.lower() not in (".mkv", ".mp4", ".m4v"):
+        return None
+    streams = _ffprobe_subs(video_path)
+    if not streams:
+        return None
+
+    chs_idx = cht_idx = eng_idx = None
+    for s in streams:
+        idx = s["index"]
+        lang = s.get("tags", {}).get("language", "")
+        title = s.get("tags", {}).get("title", "")
+        tag = f"{lang} {title}"
+        if _CHS_LANG.search(tag) and chs_idx is None:
+            chs_idx = idx
+        elif _CHT_LANG.search(tag) and cht_idx is None:
+            cht_idx = idx
+        elif _ENG_LANG.search(lang) and eng_idx is None:
+            eng_idx = idx
+
+    stem = video_path.stem
+
+    # Try CHS simplified directly
+    if chs_idx is not None:
+        out = video_path.parent / f"{stem}.zh.srt"
+        if _ffmpeg_extract(video_path, chs_idx, out):
+            log_event("info", f"subtitle: extracted CHS from MKV stream {chs_idx}", imdb_id)
+            return out
+
+    # 2. Traditional Chinese — use directly, no translation needed
+    if cht_idx is not None:
+        out = video_path.parent / f"{stem}.zh.srt"
+        if _ffmpeg_extract(video_path, cht_idx, out):
+            log_event("info", f"subtitle: extracted CHT from MKV stream {cht_idx}", imdb_id)
+            return out
+
+    # 3. Store English for AI translation (P2 picks it up via _find_english_srt)
+    if eng_idx is not None:
+        eng_out = video_path.parent / f"{stem}.extracted_eng.srt"
+        if _ffmpeg_extract(video_path, eng_idx, eng_out):
+            log_event("info", f"subtitle: extracted ENG from MKV stream {eng_idx} for translation", imdb_id)
+    return None
+
+
+# ────────────────────────────────────────────────────────────────
+# P2: AI translation (VSM approach, simplified for subtitle-only use)
+# ────────────────────────────────────────────────────────────────
+def _parse_srt(path: Path) -> list[tuple[str, str, str]]:
+    """Parse SRT → list of (index_str, timing_str, text_str)."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    blocks = re.split(r"\n{2,}", text.strip())
+    captions = []
+    for block in blocks:
+        lines = block.strip().splitlines()
+        if len(lines) >= 3:
+            idx = lines[0].strip()
+            timing = lines[1].strip()
+            body = " ".join(l.strip() for l in lines[2:] if l.strip())
+            body = re.sub(r"<[^>]+>", "", body)  # strip HTML tags
+            if body:
+                captions.append((idx, timing, body))
+    return captions
+
+
+def _write_srt(path: Path, captions: list[tuple[str, str, str]]) -> None:
+    blocks = []
+    for idx, timing, text in captions:
+        blocks.append(f"{idx}\n{timing}\n{text}")
+    path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+
+
+async def _translate_batch(
+    client,
+    texts: list[str],
+    context: list[str] | None = None,
+) -> list[str]:
+    """Translate a batch of subtitle lines to Simplified Chinese."""
+    prompt = (
+        "Translate the following movie subtitle lines into Simplified Chinese.\n"
+        "Rules:\n"
+        "1. Return ONLY a JSON array of translated strings, same count as input.\n"
+        "2. Keep translations natural and colloquial, suitable for subtitles.\n"
+        "3. Preserve names, technical terms, and numbers.\n"
+        "4. Keep each line concise — subtitle timing is fixed.\n"
+        "5. NO explanations, NO extra text outside the JSON array."
+    )
+    if context:
+        prompt += f"\n\nPrevious lines for context (do NOT include in output):\n{json.dumps(context, ensure_ascii=False)}"
+
+    import httpx
+    for attempt in range(3):
+        try:
+            if attempt:
+                await asyncio.sleep(2 ** attempt)
+            resp = await client.post(
+                f"{settings.TRANS_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.TRANS_API_KEY}"},
+                json={
+                    "model": settings.TRANS_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are a professional movie subtitle translator. Output only JSON arrays."},
+                        {"role": "user", "content": f"{prompt}\n\nINPUT:\n{json.dumps(texts, ensure_ascii=False)}"},
+                    ],
+                },
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            m = re.search(r"\[.*\]", content, re.DOTALL)
+            result = json.loads(m.group(0) if m else content)
+            if isinstance(result, list) and len(result) == len(texts):
+                return [str(r).strip() or orig for r, orig in zip(result, texts)]
+            raise ValueError(f"count mismatch: got {len(result)}, need {len(texts)}")
+        except Exception as e:
+            if attempt == 2:
+                log_event("warn", f"translate batch failed: {repr(e)}")
+                return texts  # return originals on total failure
+    return texts
+
+
+async def _translate_srt(
+    eng_srt: Path,
+    video_path: Path,
+    imdb_id: str,
+) -> Optional[Path]:
+    """Translate English .srt to Chinese .srt and save alongside video."""
+    try:
+        import httpx
+        captions = _parse_srt(eng_srt)
+        if not captions:
+            return None
+
+        batch_size = settings.TRANS_BATCH_SIZE
+        concurrent = settings.TRANS_CONCURRENT
+        semaphore = asyncio.Semaphore(concurrent)
+
+        batches = [captions[i:i+batch_size] for i in range(0, len(captions), batch_size)]
+        translated_texts: dict[int, list[str]] = {}
+
+        async def process(batch_idx: int, batch: list[tuple]) -> None:
+            async with semaphore:
+                texts = [c[2] for c in batch]
+                # pass last 3 lines of previous batch as context
+                ctx = None
+                if batch_idx > 0 and batch_idx - 1 in translated_texts:
+                    ctx = translated_texts[batch_idx - 1][-3:]
+                result = await _translate_batch(client, texts, ctx)
+                translated_texts[batch_idx] = result
+
+        async with httpx.AsyncClient() as client:
+            # process sequentially in order (context chain), but with concurrency
+            tasks = [process(i, b) for i, b in enumerate(batches)]
+            await asyncio.gather(*tasks)
+
+        # Rebuild captions with translated text
+        out_captions = []
+        for batch_idx, batch in enumerate(batches):
+            zh_texts = translated_texts.get(batch_idx, [c[2] for c in batch])
+            for (idx, timing, _orig), zh_text in zip(batch, zh_texts):
+                out_captions.append((idx, timing, zh_text))
+
+        # Save as video_stem.zh.srt
+        out_path = video_path.with_name(f"{video_path.stem}.zh.srt")
+        _write_srt(out_path, out_captions)
+        log_event("info", f"subtitle: AI translated → {out_path.name} ({len(out_captions)} lines)", imdb_id)
+        return out_path
+
+    except Exception as e:
+        log_event("error", f"subtitle translate: {repr(e)}", imdb_id)
+        return None
+
+
+# ────────────────────────────────────────────────────────────────
+# P1: online sources
 # ────────────────────────────────────────────────────────────────
 async def _try_subliminal(video_path: Path, imdb_id: str) -> Optional[Path]:
     def _run() -> Optional[Path]:
@@ -45,19 +337,14 @@ async def _try_subliminal(video_path: Path, imdb_id: str) -> Optional[Path]:
             from babelfish import Language
             from subliminal import Video, download_best_subtitles, save_subtitles, region
         except Exception as e:
-            log_event("warn", f"subliminal import: {e}", imdb_id)
             return None
-
         if not region.is_configured:
             region.configure("dogpile.cache.dbm", arguments={"filename": str(settings.data_dir / "sub_cache.dbm")})
-
         try:
             video = Video.fromname(video_path.name)
             video.imdb_id = imdb_id
-        except Exception as e:
-            log_event("warn", f"subliminal Video parse: {e}", imdb_id)
+        except Exception:
             return None
-
         langs = set()
         for code in settings.sub_langs:
             try:
@@ -67,7 +354,6 @@ async def _try_subliminal(video_path: Path, imdb_id: str) -> Optional[Path]:
         if not langs:
             from babelfish import Language as L
             langs.add(L("zho"))
-
         provider_configs = {}
         if settings.OPENSUBTITLES_API_KEY:
             provider_configs["opensubtitlescom"] = {
@@ -75,20 +361,12 @@ async def _try_subliminal(video_path: Path, imdb_id: str) -> Optional[Path]:
                 "username": settings.OPENSUBTITLES_USERNAME or None,
                 "password": settings.OPENSUBTITLES_PASSWORD or None,
             }
-
-        # providers=None means use all; providers=[] means use none — avoid empty list
         providers = list(provider_configs.keys()) if provider_configs else None
-
         try:
-            best = download_best_subtitles(
-                [video], langs,
-                providers=providers,
-                provider_configs=provider_configs if provider_configs else None,
-            )
-        except Exception as e:
-            log_event("warn", f"subliminal download: {repr(e)}", imdb_id)
+            best = download_best_subtitles([video], langs, providers=providers,
+                provider_configs=provider_configs if provider_configs else None)
+        except Exception:
             return None
-
         subs = best.get(video) or []
         if not subs:
             return None
@@ -96,23 +374,12 @@ async def _try_subliminal(video_path: Path, imdb_id: str) -> Optional[Path]:
         for srt in video_path.parent.glob(f"{video_path.stem}.*.srt"):
             return srt
         return None
-
     return await asyncio.to_thread(_run)
-
-
-# ────────────────────────────────────────────────────────────────
-# 2. subdl.com (free JSON API, good Chinese coverage)
-# ────────────────────────────────────────────────────────────────
-_SUBDL_BASE = "https://api.subdl.com/api/v1"
 
 
 async def _try_subdl(video_path: Path, imdb_id: str) -> Optional[Path]:
     import httpx
-    from store import get_movie
-
-    proxies = {"https://": settings.SUB_PROXY, "http://": settings.SUB_PROXY} if settings.SUB_PROXY else {}
     title = _clean_title(video_path.stem)
-
     def _do() -> Optional[Path]:
         try:
             params: dict = {"languages": "ZH", "subs_per_page": 5}
@@ -123,42 +390,26 @@ async def _try_subdl(video_path: Path, imdb_id: str) -> Optional[Path]:
                 params["type"] = "movie"
             if settings.SUBDL_API_KEY:
                 params["api_key"] = settings.SUBDL_API_KEY
-
             with httpx.Client(timeout=15, proxy=settings.SUB_PROXY or None) as cli:
-                r = cli.get(f"{_SUBDL_BASE}/subtitles", params=params)
+                r = cli.get("https://api.subdl.com/api/v1/subtitles", params=params)
                 r.raise_for_status()
-                data = r.json()
-
-            subs = data.get("subtitles") or []
+                subs = r.json().get("subtitles") or []
             if not subs:
                 return None
-
-            # Prefer full_season=false, hi=false
             subs.sort(key=lambda s: (s.get("full_season", True), s.get("hi", True)))
-            dl_url = subs[0].get("url") or subs[0].get("download_url")
-            if not dl_url:
-                return None
+            dl_url = subs[0].get("url") or subs[0].get("download_url") or ""
             if not dl_url.startswith("http"):
                 dl_url = "https://dl.subdl.com" + dl_url
-
             with httpx.Client(timeout=30, proxy=settings.SUB_PROXY or None, follow_redirects=True) as cli:
                 r2 = cli.get(dl_url)
                 r2.raise_for_status()
-
             tmp = video_path.parent / (video_path.stem + ".subdl.zip")
             tmp.write_bytes(r2.content)
             return _extract_srt(tmp, video_path)
         except Exception as e:
-            log_event("warn", f"subdl error: {repr(e)}", imdb_id)
+            log_event("warn", f"subdl: {repr(e)}", imdb_id)
             return None
-
     return await asyncio.to_thread(_do)
-
-
-# ────────────────────────────────────────────────────────────────
-# 3. zimuku scraping (fallback)
-# ────────────────────────────────────────────────────────────────
-_ZIMUKU_BASE = "https://zmk.pw"
 
 
 async def _try_zimuku(video_path: Path, imdb_id: str) -> Optional[Path]:
@@ -166,19 +417,12 @@ async def _try_zimuku(video_path: Path, imdb_id: str) -> Optional[Path]:
         from curl_cffi import requests as cc
     except Exception:
         return None
-
     title = _clean_title(video_path.stem)
     proxies = {"https": settings.SUB_PROXY, "http": settings.SUB_PROXY} if settings.SUB_PROXY else None
-
     def _do() -> Optional[Path]:
         try:
-            r = cc.get(
-                f"{_ZIMUKU_BASE}/search",
-                params={"q": title},
-                impersonate="chrome120",
-                timeout=15,
-                proxies=proxies,
-            )
+            r = cc.get("https://zmk.pw/search", params={"q": title},
+                impersonate="chrome120", timeout=15, proxies=proxies)
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(r.text, "lxml")
             link = soup.select_one("div.persub a, a.title")
@@ -186,8 +430,7 @@ async def _try_zimuku(video_path: Path, imdb_id: str) -> Optional[Path]:
                 return None
             detail_url = link.get("href", "")
             if not detail_url.startswith("http"):
-                detail_url = _ZIMUKU_BASE + detail_url
-
+                detail_url = "https://zmk.pw" + detail_url
             r2 = cc.get(detail_url, impersonate="chrome120", timeout=15, proxies=proxies)
             soup2 = BeautifulSoup(r2.text, "lxml")
             dl = soup2.select_one("li.dlsub a, a.btn-danger, a.download")
@@ -195,16 +438,14 @@ async def _try_zimuku(video_path: Path, imdb_id: str) -> Optional[Path]:
                 return None
             file_url = dl.get("href", "")
             if not file_url.startswith("http"):
-                file_url = _ZIMUKU_BASE + file_url
-
+                file_url = "https://zmk.pw" + file_url
             r3 = cc.get(file_url, impersonate="chrome120", timeout=30, proxies=proxies)
             tmp = video_path.parent / (video_path.stem + ".zimuku.zip")
             tmp.write_bytes(r3.content)
             return _extract_srt(tmp, video_path)
         except Exception as e:
-            log_event("warn", f"zimuku error: {repr(e)}", imdb_id)
+            log_event("warn", f"zimuku: {repr(e)}", imdb_id)
             return None
-
     return await asyncio.to_thread(_do)
 
 
@@ -229,7 +470,6 @@ def _extract_srt(zip_path: Path, video_path: Path) -> Optional[Path]:
 def _clean_title(stem: str) -> str:
     s = re.sub(
         r"\b(1080p|720p|2160p|x264|x265|h264|h265|bluray|webrip|web-dl|hdrip|yify|yts[.\w]*)\b",
-        "", stem, flags=re.I
-    )
+        "", stem, flags=re.I)
     s = re.sub(r"[._]+", " ", s)
     return s.strip()

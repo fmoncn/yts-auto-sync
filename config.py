@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     SUBDL_API_KEY: str = ""
     SUB_PROXY: str = "http://127.0.0.1:20171"
 
+    # 字幕翻译反代（复用 VSM 方案）
+    TRANS_BASE_URL: str = "http://YOUR_LLM_HOST:8317/v1"
+    TRANS_API_KEY: str = "cliproxy-local"
+    TRANS_MODEL: str = "gpt-5.4-mini"
+    TRANS_BATCH_SIZE: int = 20
+    TRANS_CONCURRENT: int = 4
+    # 开关：False=不翻译（依赖外部字幕源）
+    TRANS_ENABLED: bool = True
+
     AUTO_DOWNLOAD: bool = False
     MIN_IMDB_RATING: float = 6.5
     MAX_SIZE_GB: float = 12.0
@@ -42,17 +51,10 @@ class Settings(BaseSettings):
     DELETE_QBIT_AFTER_ORGANIZE: bool = True
     QBIT_PATH_MAP: str = "/downloads/movies:/mnt/extdata/movies;/downloads/incomplete:/mnt/extdata/torrents/incomplete"
 
-    # API 访问令牌（空=不启用）
     API_TOKEN: str = ""
-
-    # Telegram 通知
     NOTIFY_TELEGRAM_TOKEN: str = ""
     NOTIFY_TELEGRAM_CHAT_ID: str = ""
-
-    # 磁盘低水位告警 (GB)
     DISK_MIN_GB: float = 5.0
-
-    # 数据库备份保留天数
     DB_BACKUP_KEEP_DAYS: int = 7
 
     def host_path(self, container_path: str) -> str:

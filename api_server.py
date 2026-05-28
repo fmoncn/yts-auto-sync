@@ -24,6 +24,7 @@ import rss_watcher
 import qbit_client
 import tracker_pool
 import subtitle_fetcher
+from subtitle_fetcher import extract_bundled_subs
 import notifier
 
 
@@ -209,13 +210,10 @@ def organize_to_library(movie: dict, qbit_content_path: Optional[str]) -> Option
         log_event("error", f"organize mv: {repr(e)}", movie["imdb_id"])
         return None
 
-    src_dir = video.parent
-    if src_dir.exists() and src_dir.is_dir():
-        for srt in list(src_dir.glob("*.srt")) + list(src_dir.glob("*.ass")):
-            try:
-                shutil.move(str(srt), str(dest_dir / srt.name))
-            except Exception:
-                pass
+    # Extract ALL subtitle files from the torrent folder (incl. Subs/ subfolder)
+    # YTS packs typically include 30+ language subs in a Subs/ directory
+    torrent_root = src if src.is_dir() else src.parent
+    extract_bundled_subs(torrent_root, dest_dir)
 
     log_event("info", f"organized → {dest}", movie["imdb_id"])
     return dest
@@ -241,12 +239,17 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
         await _fetch_sub(movie["imdb_id"], new_video)
 
     if settings.DELETE_QBIT_AFTER_ORGANIZE and movie.get("qbit_hash"):
+        # Safety: only delete files from qBit if organize actually succeeded.
+        # If organize failed (new_video is None), keep files so nothing is lost.
+        organized_ok = new_video is not None
         try:
             await asyncio.to_thread(
-                qbit_client.remove_torrent, movie["qbit_hash"], True
+                qbit_client.remove_torrent, movie["qbit_hash"],
+                delete_files=organized_ok,
             )
             update_movie(movie["imdb_id"], qbit_hash=None)
-            log_event("info", "removed from qBit", movie["imdb_id"])
+            action = "files deleted" if organized_ok else "files kept (organize failed)"
+            log_event("info", f"removed from qBit ({action})", movie["imdb_id"])
             rss_watcher._publish({"type": "movie.unseeded", "imdb_id": movie["imdb_id"]})
         except Exception as e:
             log_event("warn", f"qBit remove: {repr(e)}", movie["imdb_id"])
