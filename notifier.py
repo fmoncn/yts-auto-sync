@@ -6,9 +6,9 @@ from config import settings
 
 
 async def notify(title: str, body: str) -> None:
-    """Fire-and-forget notification."""
+    """Fire-and-forget notification (callers use create_task)."""
     if settings.NOTIFY_TELEGRAM_TOKEN and settings.NOTIFY_TELEGRAM_CHAT_ID:
-        asyncio.create_task(_telegram(title, body))
+        await _telegram(title, body)
 
 
 async def _telegram(title: str, body: str) -> None:

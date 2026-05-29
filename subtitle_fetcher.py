@@ -292,7 +292,8 @@ async def _translate_srt(
         batches = [captions[i:i+batch_size] for i in range(0, len(captions), batch_size)]
         translated_texts: dict[int, list[str]] = {}
 
-        async with httpx.AsyncClient() as client:
+        proxy = settings.YTS_API_PROXY or None
+        async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(60.0, connect=10.0)) as client:
             for batch_idx, batch in enumerate(batches):
                 texts = [c[2] for c in batch]
                 ctx = translated_texts[batch_idx - 1][-3:] if batch_idx > 0 else None

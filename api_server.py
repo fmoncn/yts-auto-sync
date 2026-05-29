@@ -225,6 +225,10 @@ def organize_to_library(movie: dict, qbit_content_path: Optional[str]) -> Option
 
 
 async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
+    # Guard: re-fetch movie to check if already processed
+    current = get_movie(movie["imdb_id"])
+    if current and current.get("status") == "done" and current.get("final_video"):
+        return  # already organized, skip duplicate trigger
     raw = qbit_torrent.get("content_path") or qbit_torrent.get("save_path", "")
     content = settings.host_path(raw)
     new_video: Optional[Path] = None
@@ -459,7 +463,7 @@ async def api_patch_config(patch: ConfigPatch):
 
 @app.get("/api/disk")
 async def api_disk():
-    import shutil as _shutil
+    _shutil = shutil
     paths = {
         "library": settings.LIBRARY_DIR,
         "downloads": settings.QBIT_SAVE_PATH.replace("/downloads/movies", "/mnt/extdata/movies"),

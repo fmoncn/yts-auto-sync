@@ -5,3 +5,4 @@ data/
 *.pyc
 *.pyo
 .DS_Store
+.env.bak

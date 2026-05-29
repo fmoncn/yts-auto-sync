@@ -257,12 +257,19 @@ async def _enqueue_to_qbit(m: dict) -> None:
 async def poll_once() -> dict:
     summary = {"fetched": 0, "new": 0, "queued": 0, "errors": []}
     for quality in settings.qualities:
-        try:
-            items = await _fetch_rss(quality)
-        except Exception as e:
-            err_msg = f"{quality}: {repr(e)}"
-            summary["errors"].append(err_msg)
-            log_event("error", f"RSS fetch {err_msg}\n{traceback.format_exc()[-300:]}")
+        items = None
+        for _attempt in range(2):
+            try:
+                items = await _fetch_rss(quality)
+                break
+            except Exception as e:
+                if _attempt == 1:
+                    err_msg = f"{quality}: {repr(e)}"
+                    summary["errors"].append(err_msg)
+                    log_event("error", f"RSS fetch {err_msg}\n{traceback.format_exc()[-300:]}")
+                else:
+                    await asyncio.sleep(15)
+        if items is None:
             continue
         summary["fetched"] += len(items)
         for m in items:
