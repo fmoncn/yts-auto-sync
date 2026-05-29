@@ -58,7 +58,7 @@
             /* bottom padding for mobile nav bar + home indicator */
             padding-bottom:calc(38px + env(safe-area-inset-bottom));
         }
-        @media(min-width:1024px){body{padding-bottom:0;}}
+        @media(min-width:768px){body{padding-bottom:0;}}
 
         /* ── Scrollbar ─────────────────────────────────── */
         ::-webkit-scrollbar{width:5px;height:5px;}
@@ -86,8 +86,8 @@
         /* ── Safe-area scroll containers ───────────────── */
         .scroll-y{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;}
 
-        /* ── Desktop layout ────────────────────────────── */
-        @media(min-width:1024px){
+        /* ── Desktop layout: ≥ 1200px ──────────────────── */
+        @media(min-width:1200px){
             #app{
                 max-width:1700px;margin:0 auto;
                 padding:1.5rem;
@@ -104,17 +104,62 @@
             .mob-header{display:none!important;}
             .desk-header{display:flex!important;}
             body{padding-bottom:0;}
+            /* Panel 3 always visible on desktop — reset drawer transform */
+            .tab-drawer{transform:none!important;position:static!important;width:auto!important;}
+            .tab-backdrop{display:none!important;}
         }
 
-        /* ── Mobile layout ─────────────────────────────── */
-        @media(max-width:1023px){
+        /* ── Tablet layout: 768px – 1199px (iPad) ───────── */
+        @media(min-width:768px) and (max-width:1199px){
+            #app{
+                max-width:100%;
+                padding:1rem;
+                height:100vh;height:100dvh;
+                display:flex;flex-direction:column;gap:0.75rem;
+            }
+            #app-main{
+                display:grid;
+                grid-template-columns:260px 1fr;
+                gap:1rem;flex:1;overflow:hidden;
+            }
+            /* Show config + movies panels; hide Panel 3 by default (drawer) */
+            .desk-panel{display:flex!important;flex-direction:column;height:100%;overflow:hidden;}
+            .mob-nav{display:none!important;}
+            .mob-header{display:none!important;}
+            .desk-header{display:flex!important;}
+            body{padding-bottom:0;}
+            /* Panel 3 slide-in drawer */
+            .tab-drawer{
+                position:fixed!important;
+                top:0;right:0;bottom:0;
+                width:min(440px,58vw);
+                z-index:400;
+                transform:translateX(105%)!important;
+                transition:transform .3s cubic-bezier(.32,.72,0,1);
+                border-radius:var(--r) 0 0 var(--r)!important;
+                border-right:none!important;
+            }
+            .tab-drawer.tab-drawer-open{
+                transform:translateX(0)!important;
+            }
+            /* Backdrop */
+            .tab-backdrop{
+                position:fixed;inset:0;z-index:399;
+                background:rgba(0,0,0,.45);
+                backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+            }
+            /* Close button visible on tablet */
+            .tab-close-btn{display:flex!important;}
+        }
+
+        /* ── Mobile layout: < 768px ─────────────────────── */
+        @media(max-width:767px){
             #app{display:flex;flex-direction:column;height:100vh;height:100dvh;}
             #app-main{flex:1;overflow:hidden;position:relative;}
             .desk-panel{
                 position:absolute;inset:0;
                 display:none;flex-direction:column;
                 overflow:hidden;
-                /* panels have no rounded corners + no glass on mobile for performance */
                 border-radius:0;border:none;background:transparent;box-shadow:none;
                 padding:0 0;
                 padding-top:0.75rem;
@@ -123,6 +168,9 @@
             .mob-nav{display:flex!important;}
             .mob-header{display:flex!important;}
             .desk-header{display:none!important;}
+            /* Reset drawer on mobile — mob-active handles visibility */
+            .tab-drawer{transform:none!important;position:absolute!important;width:auto!important;}
+            .tab-backdrop{display:none!important;}
             /* fix input zoom on iOS */
             input:not([type=range]):not([type=checkbox]),select,textarea{font-size:16px!important;}
         }
@@ -187,7 +235,7 @@
         }
         [data-theme="light"] .movie-card{background:rgba(255,255,255,0.6);}
         .movie-card:active{background:var(--active-bg);}
-        @media(min-width:1024px){.movie-card:hover{border-color:var(--b2);}}
+        @media(min-width:768px){.movie-card:hover{border-color:var(--b2);}}
 
         /* ── Poster ────────────────────────────────────── */
         .poster{width:52px;height:78px;flex-shrink:0;border-radius:7px;background:linear-gradient(135deg,#1e293b,#0f172a);display:flex;align-items:center;justify-content:center;overflow:hidden;}
@@ -213,7 +261,10 @@
 
         /* ── Toast ─────────────────────────────────────── */
         .toast{position:fixed;bottom:calc(46px + env(safe-area-inset-bottom) + 0.5rem);left:50%;transform:translateX(-50%);z-index:9999;background:rgba(30,41,59,.97);color:#f8fafc;padding:0.6rem 1.25rem;border-radius:999px;font-size:13px;border:1px solid rgba(255,255,255,.12);box-shadow:0 4px 24px rgba(0,0,0,.4);white-space:nowrap;pointer-events:none;}
-        @media(min-width:1024px){.toast{bottom:1.5rem;}}
+        @media(min-width:768px){.toast{bottom:1.5rem;}}
+
+        /* ── Tablet drawer close btn (hidden by default) ── */
+        .tab-close-btn{display:none;align-items:center;justify-content:center;}
 
         /* ── Section title ─────────────────────────────── */
         .sec-title{font-size:11px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.07em;display:flex;align-items:center;gap:0.5rem;flex-shrink:0;}
@@ -255,8 +306,8 @@
         .info-box{background:rgba(15,23,42,.5);border:1px solid var(--b3);border-radius:1rem;padding:0.875rem;}
         [data-theme="light"] .info-box{background:rgba(255,255,255,.6);}
 
-        /* ── Swipe hint (mobile only) ───────────────────── */
-        @media(max-width:1023px){
+        /* ── Mobile panel top padding ──────────────────── */
+        @media(max-width:767px){
             .desk-panel{padding-top:0.875rem;}
         }
     </style>
@@ -378,6 +429,71 @@
                         <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 0;">
                             <span style="font-size:13px;color:var(--t2);">轮询间隔</span>
                             <span style="font-size:12px;font-family:monospace;color:var(--t4);">{{ formatInterval(config.poll_interval) }}</span>
+                        </div>
+                    </div>
+
+                    <!-- 字幕 & 翻译 -->
+                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;">
+                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--t4);margin-bottom:8px;display:flex;align-items:center;gap:5px;">
+                            <i class="ph ph-subtitles"></i> 字幕 &amp; 翻译
+                        </div>
+                        <!-- 自动字幕 / AI翻译 开关 -->
+                        <div style="display:flex;flex-direction:column;gap:0;">
+                            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b3);">
+                                <span style="font-size:13px;color:var(--t2);">自动字幕</span>
+                                <label class="toggle">
+                                    <input type="checkbox" :checked="config.auto_subtitle" @change="patchConfig('auto_subtitle', $event.target.checked)">
+                                    <span class="toggle-t"></span>
+                                </label>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b3);">
+                                <div>
+                                    <span style="font-size:13px;color:var(--t2);">AI 翻译</span>
+                                    <span style="font-size:10px;color:var(--t4);margin-left:6px;">无中文时自动翻译英文</span>
+                                </div>
+                                <label class="toggle">
+                                    <input type="checkbox" :checked="config.trans_enabled" @change="patchConfig('trans_enabled', $event.target.checked)">
+                                    <span class="toggle-t"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <!-- 翻译模型 & 批次大小 -->
+                        <div style="display:grid;grid-template-columns:1fr auto;gap:0.625rem;margin-top:0.625rem;align-items:end;">
+                            <div>
+                                <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">翻译模型</label>
+                                <input type="text" :value="config.trans_model"
+                                       @change="patchConfig('trans_model', $event.target.value)"
+                                       placeholder="gpt-5.4-mini"
+                                       style="width:100%;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:13px;outline:none;">
+                            </div>
+                            <div>
+                                <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">批次</label>
+                                <input type="number" min="5" max="100" step="5" :value="config.trans_batch_size"
+                                       @change="patchConfig('trans_batch_size', +$event.target.value)"
+                                       style="width:68px;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:13px;outline:none;">
+                            </div>
+                        </div>
+                        <!-- API 端点 -->
+                        <div style="margin-top:0.625rem;">
+                            <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">API 端点</label>
+                            <input type="text" :value="config.trans_base_url"
+                                   @change="patchConfig('trans_base_url', $event.target.value)"
+                                   placeholder="http://127.0.0.1:8317/v1"
+                                   style="width:100%;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:12px;outline:none;">
+                        </div>
+                        <!-- API Key -->
+                        <div style="margin-top:0.625rem;">
+                            <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">API Key</label>
+                            <div style="position:relative;">
+                                <input :type="showTransKey ? 'text' : 'password'" :value="config.trans_api_key"
+                                       @change="patchConfig('trans_api_key', $event.target.value)"
+                                       placeholder="sk-..."
+                                       style="width:100%;padding:7px 36px 7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:12px;outline:none;box-sizing:border-box;">
+                                <button @click="showTransKey=!showTransKey" type="button"
+                                        style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t4);cursor:pointer;padding:0;display:flex;align-items:center;">
+                                    <i class="ph" :class="showTransKey ? 'ph-eye-slash' : 'ph-eye'" style="font-size:14px;"></i>
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -542,7 +658,7 @@
         </section>
 
         <!-- ── Panel 3: 详情 + 日志 ─────────────────────────────── -->
-        <section class="desk-panel glass" :class="{ 'mob-active': mobTab === 'detail' }" style="padding:0 0.875rem;">
+        <section class="desk-panel glass tab-drawer" :class="{ 'mob-active': mobTab === 'detail', 'tab-drawer-open': !!activeMovie }" style="padding:0 0.875rem;">
             <!-- Tab 切换 -->
             <div style="display:flex;gap:5px;margin-bottom:0.75rem;flex-shrink:0;align-items:center;">
                 <button @click="rightTab='detail'" class="ftab" :class="rightTab==='detail'?'ftab-on':'ftab-off'">
@@ -552,13 +668,18 @@
                     <i class="ph ph-terminal-window" style="margin-right:3px;"></i>日志
                     <span v-if="rightTab!=='log'&&unreadLogs>0" class="nav-badge" style="position:static;margin-left:4px;display:inline-flex;">{{ unreadLogs }}</span>
                 </button>
-                <button v-if="rightTab==='log'" @click="logs=[];unreadLogs=0" class="btn btn-icon btn-slate" style="margin-left:auto;width:28px;height:28px;border-radius:6px;">
-                    <i class="ph ph-eraser" style="font-size:13px;"></i>
-                </button>
-                <label v-if="rightTab==='log'" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--t4);margin-left:4px;">
-                    <input type="checkbox" v-model="autoScroll" style="accent-color:var(--accent);">
-                    自动滚动
-                </label>
+                <div style="margin-left:auto;display:flex;gap:4px;align-items:center;">
+                    <label v-if="rightTab==='log'" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--t4);">
+                        <input type="checkbox" v-model="autoScroll" style="accent-color:var(--accent);">
+                        自动滚动
+                    </label>
+                    <button v-if="rightTab==='log'" @click="logs=[];unreadLogs=0" class="btn btn-icon btn-slate" style="width:28px;height:28px;border-radius:6px;">
+                        <i class="ph ph-eraser" style="font-size:13px;"></i>
+                    </button>
+                    <button class="tab-close-btn btn btn-icon btn-slate" @click="closeDetail()" style="width:28px;height:28px;border-radius:6px;" title="关闭">
+                        <i class="ph ph-x" style="font-size:14px;"></i>
+                    </button>
+                </div>
             </div>
 
             <!-- 详情面板 -->
@@ -668,6 +789,9 @@
         </section>
     </div><!-- end #app-main -->
 
+    <!-- ══ Tablet drawer backdrop ════════════════════════════════ -->
+    <div v-if="activeMovie" class="tab-backdrop" @click="closeDetail()"></div>
+
     <!-- ══ Mobile bottom nav ══════════════════════════════════════ -->
     <nav class="mob-nav" style="display:none;">
         <button class="nav-btn" :class="{ active: mobTab==='movies' }" @click="mobTab='movies'">
@@ -724,13 +848,13 @@ createApp({
         const toastMsg = ref('');
         const logBox = ref(null);
         const configSaving = ref(false);
+        const showTransKey = ref(false);
         const rightTab = ref('log');
         const mobTab = ref('movies');
         const unreadLogs = ref(0);
 
         const switches = [
             { key: 'auto_download', label: '自动下载' },
-            { key: 'auto_subtitle', label: '自动字幕' },
             { key: 'auto_organize', label: '下载后整理' },
         ];
 
@@ -814,8 +938,13 @@ createApp({
         function selectMovie(m) {
             activeId.value = m.imdb_id;
             rightTab.value = 'detail';
-            // On mobile, switch to detail tab
-            if (window.innerWidth < 1024) mobTab.value = 'detail';
+            // On mobile (< 768px), switch to detail tab
+            if (window.innerWidth < 768) mobTab.value = 'detail';
+        }
+
+        function closeDetail() {
+            activeId.value = null;
+            if (window.innerWidth < 768) mobTab.value = 'movies';
         }
 
         function switchToDetail() {
@@ -967,22 +1096,36 @@ createApp({
             es.addEventListener('sub.searching', e => {
                 const d = JSON.parse(e.data);
                 updateMovieField(d.imdb_id, {subtitle_status:'searching'});
-                pushLog('info', `抓字幕… ${d.imdb_id}`);
+                const m = movies.value.find(x => x.imdb_id === d.imdb_id);
+                const t = m ? shortTitle(m.title) : d.imdb_id;
+                pushLog('info', `字幕检索 → ${t}`);
+            });
+            es.addEventListener('sub.progress', e => {
+                const d = JSON.parse(e.data);
+                const m = movies.value.find(x => x.imdb_id === d.imdb_id);
+                const t = m ? shortTitle(m.title) : d.imdb_id;
+                pushLog('info', `${d.msg} · ${t}`);
             });
             es.addEventListener('sub.found', e => {
                 const d = JSON.parse(e.data);
                 updateMovieField(d.imdb_id, {subtitle_status:'found',subtitle_path:d.path});
-                pushLog('info', `字幕 ✓ ${d.path.split('/').pop()}`);
+                const m = movies.value.find(x => x.imdb_id === d.imdb_id);
+                const t = m ? shortTitle(m.title) : d.imdb_id;
+                pushLog('info', `字幕完成 ✓ → ${t}`);
             });
             es.addEventListener('sub.missing', e => {
                 const d = JSON.parse(e.data);
                 updateMovieField(d.imdb_id, {subtitle_status:'missing'});
-                pushLog('warn', `字幕缺失 ${d.imdb_id}`);
+                const m = movies.value.find(x => x.imdb_id === d.imdb_id);
+                const t = m ? shortTitle(m.title) : d.imdb_id;
+                pushLog('warn', `字幕缺失 → ${t}`);
             });
             es.addEventListener('sub.error', e => {
                 const d = JSON.parse(e.data);
                 updateMovieField(d.imdb_id, {subtitle_status:'error'});
-                pushLog('error', `字幕错误 ${d.imdb_id}: ${d.error}`);
+                const m = movies.value.find(x => x.imdb_id === d.imdb_id);
+                const t = m ? shortTitle(m.title) : d.imdb_id;
+                pushLog('error', `字幕错误 → ${t}: ${d.error}`);
             });
             es.addEventListener('rss.polled', e => {
                 const d = JSON.parse(e.data).summary;
@@ -1008,11 +1151,11 @@ createApp({
         return {
             theme, toggleTheme, movies, live, logs, config, qbit, disk,
             connected, refreshing, refreshRss, downloadMovie, refetchSubtitle, removeMovie,
-            activeId, activeMovie, selectMovie, switchToDetail,
+            activeId, activeMovie, selectMovie, switchToDetail, closeDetail,
             filter, filters, counts, filteredMovies, stats,
             searchQ, sortBy, minRating, qualityFilter, switches,
             autoScroll, logBox, rightTab, mobTab, unreadLogs,
-            toastMsg, configSaving, patchConfig, doBackup,
+            toastMsg, configSaving, patchConfig, doBackup, showTransKey,
             shortTitle, fmtSize, fmtSpeed, fmtEta, formatInterval,
             sLabel, sPill, subIcon, subColor, subLabel, liveOf,
         };

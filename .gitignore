@@ -6,3 +6,9 @@ data/
 *.pyo
 .DS_Store
 .env.bak
+
+# 运行时数据库
+*.db
+
+# macOS AppleDouble
+._*

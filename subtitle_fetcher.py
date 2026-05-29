@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from config import settings
 from store import log_event
@@ -13,7 +13,11 @@ from store import log_event
 # ────────────────────────────────────────────────────────────────
 # Public entry point
 # ────────────────────────────────────────────────────────────────
-async def fetch_for_video(video_path: Path, imdb_id: str) -> Optional[Path]:
+async def fetch_for_video(
+    video_path: Path,
+    imdb_id: str,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> Optional[Path]:
     """Return a Chinese subtitle file path, or None."""
     if not video_path.exists():
         log_event("warn", f"subtitle: video missing {video_path}", imdb_id)
@@ -37,8 +41,13 @@ async def fetch_for_video(video_path: Path, imdb_id: str) -> Optional[Path]:
     if settings.TRANS_ENABLED:
         eng = _find_english_srt(video_path.parent)
         if eng:
+            captions = _parse_srt(eng)
+            n_lines = len(captions)
+            n_batches = max(1, (n_lines + settings.TRANS_BATCH_SIZE - 1) // settings.TRANS_BATCH_SIZE)
             log_event("info", f"subtitle: translating {eng.name} → zh", imdb_id)
-            return await _translate_srt(eng, video_path, imdb_id)
+            if on_progress:
+                on_progress(f"AI 翻译字幕 · {n_lines} 行 / {n_batches} 批")
+            return await _translate_srt(eng, video_path, imdb_id, on_progress=on_progress)
 
     return None
 
@@ -140,14 +149,29 @@ def _ffprobe_subs(video_path: Path) -> list[dict]:
 def _ffmpeg_extract(video_path: Path, stream_idx: int, out_path: Path) -> bool:
     """Extract a single subtitle stream to out_path (.srt)."""
     import subprocess
+    # Timeout: 120s base + 1s per 20MB (handles 3h+ movies at slow extraction speed)
+    size_mb = video_path.stat().st_size / 1024 / 1024 if video_path.exists() else 0
+    timeout = max(120, int(30 + size_mb * 0.05))
     try:
-        r = subprocess.run(
+        subprocess.run(
             ["ffmpeg", "-y", "-i", str(video_path),
-             "-map", f"0:{stream_idx}", str(out_path)],
-            capture_output=True, timeout=60
+             "-map", f"0:{stream_idx}", "-c:s", "srt", str(out_path)],
+            capture_output=True, timeout=timeout
         )
-        return out_path.exists() and out_path.stat().st_size > 100
-    except Exception:
+        if out_path.exists() and out_path.stat().st_size > 100:
+            return True
+        if out_path.exists():
+            out_path.unlink(missing_ok=True)
+        return False
+    except subprocess.TimeoutExpired:
+        log_event("error", f"subtitle: ffmpeg extract timed out after {timeout}s (stream {stream_idx})")
+        if out_path.exists():
+            out_path.unlink(missing_ok=True)
+        return False
+    except Exception as e:
+        log_event("error", f"subtitle: ffmpeg extract failed: {repr(e)} (stream {stream_idx})")
+        if out_path.exists():
+            out_path.unlink(missing_ok=True)
         return False
 
 def extract_subs_from_mkv(video_path: Path, imdb_id: str) -> Optional[Path]:
@@ -279,6 +303,7 @@ async def _translate_srt(
     eng_srt: Path,
     video_path: Path,
     imdb_id: str,
+    on_progress: Optional[Callable[[str], None]] = None,
 ) -> Optional[Path]:
     """Translate English .srt to Chinese .srt and save alongside video."""
     try:
@@ -291,6 +316,9 @@ async def _translate_srt(
 
         batches = [captions[i:i+batch_size] for i in range(0, len(captions), batch_size)]
         translated_texts: dict[int, list[str]] = {}
+        total = len(batches)
+        # Milestones at 25%, 50%, 75%
+        milestones = {max(1, total * p // 100) for p in (25, 50, 75)}
 
         proxy = settings.YTS_API_PROXY or None
         async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(60.0, connect=10.0)) as client:
@@ -299,6 +327,9 @@ async def _translate_srt(
                 ctx = translated_texts[batch_idx - 1][-3:] if batch_idx > 0 else None
                 result = await _translate_batch(client, texts, ctx)
                 translated_texts[batch_idx] = result
+                if on_progress and (batch_idx + 1) in milestones:
+                    pct = (batch_idx + 1) * 100 // total
+                    on_progress(f"翻译进度 {pct}% ({batch_idx + 1}/{total} 批)")
 
         # Rebuild captions with translated text
         out_captions = []

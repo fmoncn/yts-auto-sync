@@ -277,8 +277,12 @@ async def _upload_movie(imdb_id: str, movie_dir: Path) -> None:
 async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
     update_movie(imdb_id, subtitle_status="searching")
     rss_watcher._publish({"type": "sub.searching", "imdb_id": imdb_id})
+
+    def _progress(msg: str) -> None:
+        rss_watcher._publish({"type": "sub.progress", "imdb_id": imdb_id, "msg": msg})
+
     try:
-        srt = await subtitle_fetcher.fetch_for_video(video_path, imdb_id)
+        srt = await subtitle_fetcher.fetch_for_video(video_path, imdb_id, on_progress=_progress)
         if srt:
             update_movie(imdb_id, subtitle_status="found", subtitle_path=str(srt))
             log_event("info", f"subtitle: {srt.name}", imdb_id)
@@ -404,6 +408,11 @@ async def api_config():
         "auto_subtitle": settings.AUTO_SUBTITLE,
         "save_path": settings.QBIT_SAVE_PATH,
         "sub_langs": settings.sub_langs,
+        "trans_enabled": settings.TRANS_ENABLED,
+        "trans_model": settings.TRANS_MODEL,
+        "trans_base_url": settings.TRANS_BASE_URL,
+        "trans_api_key": settings.TRANS_API_KEY,
+        "trans_batch_size": settings.TRANS_BATCH_SIZE,
         "tracker_count": len(trackers),
         "auth_enabled": bool(settings.API_TOKEN),
         "telegram_enabled": bool(settings.NOTIFY_TELEGRAM_TOKEN),
@@ -417,6 +426,11 @@ class ConfigPatch(BaseModel):
     auto_subtitle: Optional[bool] = None
     auto_organize: Optional[bool] = None
     poll_interval: Optional[int] = None
+    trans_enabled: Optional[bool] = None
+    trans_model: Optional[str] = None
+    trans_base_url: Optional[str] = None
+    trans_api_key: Optional[str] = None
+    trans_batch_size: Optional[int] = None
 
 
 @app.patch("/api/config", dependencies=[_auth])
@@ -434,6 +448,11 @@ async def api_patch_config(patch: ConfigPatch):
         "auto_subtitle": "AUTO_SUBTITLE",
         "auto_organize": "AUTO_ORGANIZE",
         "poll_interval": "YTS_POLL_INTERVAL",
+        "trans_enabled": "TRANS_ENABLED",
+        "trans_model": "TRANS_MODEL",
+        "trans_base_url": "TRANS_BASE_URL",
+        "trans_api_key": "TRANS_API_KEY",
+        "trans_batch_size": "TRANS_BATCH_SIZE",
     }
     applied = {}
     for field, env_key in mapping.items():
