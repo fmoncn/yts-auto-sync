@@ -37,16 +37,18 @@ async def fetch_for_video(
     if bundled:
         return bundled
 
-    # Step 3: translate extracted English SRT → Chinese
+    # Step 3: translate extracted English SRT → Chinese (agy first, HTTP fallback)
     if settings.TRANS_ENABLED:
         eng = _find_english_srt(video_path.parent)
         if eng:
             captions = _parse_srt(eng)
             n_lines = len(captions)
-            n_batches = max(1, (n_lines + settings.TRANS_BATCH_SIZE - 1) // settings.TRANS_BATCH_SIZE)
-            log_event("info", f"subtitle: translating {eng.name} → zh", imdb_id)
+            log_event("info", f"subtitle: translating {eng.name} → zh ({n_lines} lines)", imdb_id)
             if on_progress:
-                on_progress(f"AI 翻译字幕 · {n_lines} 行 / {n_batches} 批")
+                on_progress(f"AI 翻译字幕 · {n_lines} 行")
+            result = await _translate_srt_agy(eng, video_path, imdb_id, on_progress=on_progress)
+            if result:
+                return result
             return await _translate_srt(eng, video_path, imdb_id, on_progress=on_progress)
 
     return None
@@ -224,8 +226,88 @@ def extract_subs_from_mkv(video_path: Path, imdb_id: str) -> Optional[Path]:
 
 
 # ────────────────────────────────────────────────────────────────
-# P2: AI translation (VSM approach, simplified for subtitle-only use)
+# P2: AI translation via Antigravity CLI (agy)
 # ────────────────────────────────────────────────────────────────
+_AGY_BIN = str(Path.home() / ".local/bin/agy")
+
+AGY_CHUNK_LINES = 200  # SRT lines per agy call (avoid context overflow)
+
+
+async def _translate_srt_agy(
+    eng_srt: Path,
+    video_path: Path,
+    imdb_id: str,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> Optional[Path]:
+    """Translate English SRT → Chinese SRT using Antigravity CLI (agy)."""
+    import subprocess, shutil
+
+    agy = shutil.which("agy") or _AGY_BIN
+    if not Path(agy).exists():
+        log_event("warn", "subtitle: agy not found, falling back to HTTP translator", imdb_id)
+        return None
+
+    src_text = eng_srt.read_text(encoding="utf-8", errors="replace")
+    blocks = re.split(r"\n{2,}", src_text.strip())
+    if not blocks:
+        return None
+
+    # Split into chunks to avoid hitting agy context limits
+    chunks: list[list[str]] = []
+    cur: list[str] = []
+    for b in blocks:
+        cur.append(b)
+        if len(cur) >= AGY_CHUNK_LINES:
+            chunks.append(cur)
+            cur = []
+    if cur:
+        chunks.append(cur)
+
+    translated_blocks: list[str] = []
+    total = len(chunks)
+    for i, chunk in enumerate(chunks):
+        srt_chunk = "\n\n".join(chunk)
+        prompt = (
+            "Translate this SRT subtitle file to Simplified Chinese. "
+            "Output ONLY the raw SRT content with the same block numbers and timecodes unchanged. "
+            "Translate only the subtitle text lines. No explanations, no markdown:\n\n"
+            + srt_chunk
+        )
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [agy, "--dangerously-skip-permissions"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            out = result.stdout.strip()
+            if not out:
+                log_event("warn", f"subtitle: agy returned empty for chunk {i}", imdb_id)
+                translated_blocks.extend(chunk)
+            else:
+                # Strip markdown code fences if agy wraps output
+                out = re.sub(r"^```[a-z]*\n?", "", out, flags=re.M)
+                out = re.sub(r"```$", "", out, flags=re.M).strip()
+                translated_blocks.extend(out.split("\n\n"))
+        except subprocess.TimeoutExpired:
+            log_event("warn", f"subtitle: agy timeout on chunk {i}, using originals", imdb_id)
+            translated_blocks.extend(chunk)
+        except Exception as e:
+            log_event("warn", f"subtitle: agy error on chunk {i}: {repr(e)}", imdb_id)
+            translated_blocks.extend(chunk)
+
+        if on_progress and total > 1:
+            pct = (i + 1) * 100 // total
+            on_progress(f"翻译进度 {pct}% ({i + 1}/{total} 段)")
+
+    out_path = video_path.with_name(f"{video_path.stem}.zh.srt")
+    out_path.write_text("\n\n".join(translated_blocks) + "\n", encoding="utf-8")
+    log_event("info", f"subtitle: agy translated → {out_path.name} ({len(translated_blocks)} blocks)", imdb_id)
+    return out_path
+
+
 def _parse_srt(path: Path) -> list[tuple[str, str, str]]:
     """Parse SRT → list of (index_str, timing_str, text_str)."""
     text = path.read_text(encoding="utf-8", errors="replace")
