@@ -344,6 +344,99 @@ def api_movie(imdb_id: str):
     return m
 
 
+@app.get("/api/search", dependencies=[_auth])
+async def api_search(q: str = Query(..., min_length=1), limit: int = 20):
+    """Search YTS for movies by title. Returns YTS API movie objects."""
+    import httpx, urllib.parse
+    proxy = settings.YTS_API_PROXY or None
+    try:
+        async with httpx.AsyncClient(timeout=15, proxy=proxy, follow_redirects=True) as cli:
+            r = await cli.get(
+                "https://yts.bz/api/v2/list_movies.json",
+                params={"query_term": q, "limit": limit, "sort_by": "year", "order_by": "desc"},
+            )
+            r.raise_for_status()
+            data = r.json().get("data", {})
+    except Exception as e:
+        raise HTTPException(502, f"YTS API error: {e}")
+
+    movies = data.get("movies") or []
+    results = []
+    for m in movies:
+        torrents = [
+            {"quality": t["quality"], "type": t.get("type", ""), "size": t["size"],
+             "size_bytes": t.get("size_bytes", 0), "hash": t["hash"]}
+            for t in (m.get("torrents") or [])
+        ]
+        results.append({
+            "yts_id": m.get("id"),
+            "title": m.get("title_long") or m.get("title"),
+            "year": m.get("year"),
+            "rating": m.get("rating"),
+            "genres": m.get("genres") or [],
+            "summary": (m.get("summary") or "")[:300],
+            "cover": m.get("medium_cover_image", ""),
+            "yts_url": m.get("url", ""),
+            "torrents": torrents,
+        })
+    return {"results": results, "total": data.get("movie_count", len(results))}
+
+
+class SearchDownloadBody(BaseModel):
+    title: str
+    year: int
+    rating: float = 0.0
+    genres: list[str] = []
+    cover: str = ""
+    yts_url: str = ""
+    torrent_hash: str
+    torrent_quality: str
+    torrent_size: str
+    torrent_size_bytes: int = 0
+    magnet: str = ""
+
+
+@app.post("/api/search/download", dependencies=[_auth])
+async def api_search_download(body: SearchDownloadBody):
+    """Download a movie found via /api/search (not yet in DB)."""
+    import urllib.parse
+    torrent_hash = body.torrent_hash.lower()
+
+    # Check if already tracked
+    existing = find_by_hash(torrent_hash)
+    if existing:
+        if existing.get("status") not in ("skipped", "error"):
+            return {"ok": True, "imdb_id": existing["imdb_id"], "note": "already tracked"}
+
+    trackers = await tracker_pool.get_trackers()
+    tracker_str = "&".join(f"tr={urllib.parse.quote(t)}" for t in trackers[:10])
+    magnet = body.magnet or (
+        f"magnet:?xt=urn:btih:{torrent_hash}"
+        f"&dn={urllib.parse.quote(body.title)}"
+        + (f"&{tracker_str}" if tracker_str else "")
+    )
+
+    from store import upsert_movie
+    movie = {
+        "imdb_id": torrent_hash,
+        "info_hash": torrent_hash,
+        "title": f"{body.title} [{body.torrent_quality}]",
+        "year": body.year,
+        "rating": body.rating,
+        "genres": ", ".join(body.genres),
+        "poster_url": body.cover,
+        "yts_url": body.yts_url,
+        "magnet": magnet,
+        "quality": body.torrent_quality,
+        "size_bytes": body.torrent_size_bytes,
+        "status": "discovered",
+        "subtitle_status": "pending",
+    }
+    upsert_movie(movie)
+    await rss_watcher._enqueue_to_qbit(movie)
+    return {"ok": True, "imdb_id": torrent_hash}
+
+
 @app.post("/api/movies/{imdb_id}/download", dependencies=[_auth])
 async def api_download(imdb_id: str):
     m = get_movie(imdb_id)
