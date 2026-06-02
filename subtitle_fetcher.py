@@ -1,13 +1,23 @@
-"""Chinese subtitle: MKV embedded Chinese → AI translate English fallback."""
+"""Chinese-first subtitle resolver (extract-only, no AI translation).
+
+Waterfall:
+  L1  existing CHS file alongside video        -> use as-is (zh)
+  L1  embedded CHS/CHT in MKV                   -> extract <stem>.zh.srt (zh)
+  L2  embedded English in MKV                   -> extract <stem>.en.srt (en, for manual translation)
+  L3  external English via subdl (proxied)      -> <stem>.en.srt (en)
+  L4  nothing                                   -> None (caller marks no_subtitle)
+
+The caller (api_server._fetch_sub) infers status from the returned filename:
+  *.zh.srt -> "zh", *.en.srt -> "en_only", None -> "no_subtitle".
+"""
 from __future__ import annotations
 import asyncio
-import json
 import re
 from pathlib import Path
 from typing import Callable, Optional
 
 from config import settings
-from store import log_event
+from store import log_event, get_movie
 
 
 # ────────────────────────────────────────────────────────────────
@@ -18,52 +28,41 @@ async def fetch_for_video(
     imdb_id: str,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> Optional[Path]:
-    """Return a Chinese subtitle file path, or None."""
+    """Return best subtitle path (.zh.srt preferred, else .en.srt), or None."""
     if not video_path.exists():
         log_event("warn", f"subtitle: video missing {video_path}", imdb_id)
         return None
 
-    # Step 1: check if Chinese sub already exists alongside the video
+    # L1a: existing Chinese subtitle file alongside the video
     bundled = _find_existing_chs(video_path.parent)
     if bundled:
         log_event("info", f"subtitle: using existing CHS sub {bundled.name}", imdb_id)
         return bundled
 
-    # Step 2: extract from MKV — Chinese directly, or English for translation
-    await asyncio.to_thread(extract_subs_from_mkv, video_path, imdb_id)
+    # L1b/L2: extract embedded subs (CHS/CHT -> .zh.srt, else English -> .en.srt)
+    if on_progress:
+        on_progress("提取内嵌字幕")
+    extracted = await asyncio.to_thread(extract_subs_from_mkv, video_path, imdb_id)
+    if extracted:
+        return extracted
 
-    # Check again after MKV extraction (may have found Chinese)
-    bundled = _find_existing_chs(video_path.parent)
-    if bundled:
-        return bundled
-
-    # Step 3: translate extracted English SRT → Chinese (agy first, HTTP fallback)
-    if settings.TRANS_ENABLED:
-        eng = _find_english_srt(video_path.parent)
-        if eng:
-            captions = _parse_srt(eng)
-            n_lines = len(captions)
-            log_event("info", f"subtitle: translating {eng.name} → zh ({n_lines} lines)", imdb_id)
-            if on_progress:
-                on_progress(f"AI 翻译字幕 · {n_lines} 行")
-            result = await _translate_srt_agy(eng, video_path, imdb_id, on_progress=on_progress)
-            if result:
-                return result
-            return await _translate_srt(eng, video_path, imdb_id, on_progress=on_progress)
+    # L3: external English download via subdl (no translation)
+    if settings.SUBDL_API_KEY:
+        if on_progress:
+            on_progress("外部下载英文字幕")
+        downloaded = await _download_subdl_en(video_path, imdb_id)
+        if downloaded:
+            return downloaded
 
     return None
 
 
 # ────────────────────────────────────────────────────────────────
-# P0 helpers: detect existing Chinese subtitle files
+# Detect existing subtitle files on disk
 # ────────────────────────────────────────────────────────────────
 _CHS_KEYWORDS = re.compile(
     r"(chinese[._\-]?(simplified|simp|chs|zhs|zh[-_]s|sc)|"
     r"简体|chs|zhs|zh[-_]s|\bsc\b|chinese)",
-    re.I,
-)
-_ENG_KEYWORDS = re.compile(
-    r"(english|eng\b|en\b)",
     re.I,
 )
 _SUB_EXTS = {".srt", ".ass", ".ssa", ".vtt"}
@@ -81,31 +80,10 @@ def _find_existing_chs(directory: Path) -> Optional[Path]:
     return None
 
 
-def _find_english_srt(directory: Path) -> Optional[Path]:
-    """Find the best English subtitle in directory (prefer .srt)."""
-    if not directory.is_dir():
-        return None
-    # Prefer MKV-extracted English srt
-    for f in sorted(directory.iterdir()):
-        if f.name.endswith(".extracted_eng.srt"):
-            return f
-    candidates = []
-    for f in sorted(directory.iterdir()):
-        if f.suffix.lower() in _SUB_EXTS:
-            stem = f.stem.lower()
-            if _ENG_KEYWORDS.search(stem):
-                candidates.append(f)
-    # Prefer .srt over .ass
-    for f in candidates:
-        if f.suffix.lower() == ".srt":
-            return f
-    return candidates[0] if candidates else None
-
-
 def extract_bundled_subs(torrent_root: Path, dest_dir: Path) -> list[Path]:
     """
-    Called from organize_to_library to extract subtitle files from the
-    torrent folder (including Subs/ subfolder) into dest_dir.
+    Called from organize_to_library to copy subtitle files from the torrent
+    folder (including a Subs/ subfolder) into dest_dir.
 
     Returns list of copied subtitle paths.
     """
@@ -129,11 +107,12 @@ def extract_bundled_subs(torrent_root: Path, dest_dir: Path) -> list[Path]:
 
 
 # ────────────────────────────────────────────────────────────────
-# P0.5: extract embedded subtitles from MKV
+# Extract embedded subtitles from MKV (ffmpeg)
 # ────────────────────────────────────────────────────────────────
 _CHS_LANG = re.compile(r"(chi.*simpl|zho.*simpl|chs|zh.*hans)", re.I)
 _CHT_LANG = re.compile(r"(chi|zho|chinese)", re.I)
-_ENG_LANG  = re.compile(r"(eng)", re.I)
+_ENG_LANG = re.compile(r"(eng)", re.I)
+
 
 def _ffprobe_subs(video_path: Path) -> list[dict]:
     """Return list of subtitle stream info dicts from ffprobe."""
@@ -148,10 +127,10 @@ def _ffprobe_subs(video_path: Path) -> list[dict]:
     except Exception:
         return []
 
+
 def _ffmpeg_extract(video_path: Path, stream_idx: int, out_path: Path) -> bool:
     """Extract a single subtitle stream to out_path (.srt)."""
     import subprocess
-    # Timeout: 120s base + 1s per 20MB (handles 3h+ movies at slow extraction speed)
     size_mb = video_path.stat().st_size / 1024 / 1024 if video_path.exists() else 0
     timeout = max(120, int(30 + size_mb * 0.05))
     try:
@@ -176,11 +155,11 @@ def _ffmpeg_extract(video_path: Path, stream_idx: int, out_path: Path) -> bool:
             out_path.unlink(missing_ok=True)
         return False
 
+
 def extract_subs_from_mkv(video_path: Path, imdb_id: str) -> Optional[Path]:
     """
-    Extract embedded subtitles from MKV.
-    Priority: CHS simplified > eng (stored for AI translation).
-    Returns CHS path if found directly, else None (eng stored as .extracted_eng.srt).
+    Extract embedded subtitles. Priority: CHS > CHT (-> .zh.srt) > English (-> .en.srt).
+    Returns the extracted subtitle path, or None if no usable stream.
     """
     if video_path.suffix.lower() not in (".mkv", ".mp4", ".m4v"):
         return None
@@ -203,231 +182,92 @@ def extract_subs_from_mkv(video_path: Path, imdb_id: str) -> Optional[Path]:
 
     stem = video_path.stem
 
-    # Try CHS simplified directly
+    # Simplified Chinese — use directly
     if chs_idx is not None:
         out = video_path.parent / f"{stem}.zh.srt"
         if _ffmpeg_extract(video_path, chs_idx, out):
             log_event("info", f"subtitle: extracted CHS from MKV stream {chs_idx}", imdb_id)
             return out
 
-    # 2. Traditional Chinese — use directly, no translation needed
+    # Traditional Chinese — use directly
     if cht_idx is not None:
         out = video_path.parent / f"{stem}.zh.srt"
         if _ffmpeg_extract(video_path, cht_idx, out):
             log_event("info", f"subtitle: extracted CHT from MKV stream {cht_idx}", imdb_id)
             return out
 
-    # 3. Store English for AI translation (P2 picks it up via _find_english_srt)
+    # English — deliver as-is for manual translation
     if eng_idx is not None:
-        eng_out = video_path.parent / f"{stem}.extracted_eng.srt"
-        if _ffmpeg_extract(video_path, eng_idx, eng_out):
-            log_event("info", f"subtitle: extracted ENG from MKV stream {eng_idx} for translation", imdb_id)
+        out = video_path.parent / f"{stem}.en.srt"
+        if _ffmpeg_extract(video_path, eng_idx, out):
+            log_event("info", f"subtitle: extracted ENG from MKV stream {eng_idx} (manual translate)", imdb_id)
+            return out
+
     return None
 
 
 # ────────────────────────────────────────────────────────────────
-# P2: AI translation via Antigravity CLI (agy)
+# External English subtitle via subdl.com (download only, no translation)
 # ────────────────────────────────────────────────────────────────
-_AGY_BIN = str(Path.home() / ".local/bin/agy")
-
-AGY_CHUNK_LINES = 200  # SRT lines per agy call (avoid context overflow)
-
-
-async def _translate_srt_agy(
-    eng_srt: Path,
-    video_path: Path,
-    imdb_id: str,
-    on_progress: Optional[Callable[[str], None]] = None,
-) -> Optional[Path]:
-    """Translate English SRT → Chinese SRT using Antigravity CLI (agy)."""
-    import subprocess, shutil
-
-    agy = shutil.which("agy") or _AGY_BIN
-    if not Path(agy).exists():
-        log_event("warn", "subtitle: agy not found, falling back to HTTP translator", imdb_id)
-        return None
-
-    src_text = eng_srt.read_text(encoding="utf-8", errors="replace")
-    blocks = re.split(r"\n{2,}", src_text.strip())
-    if not blocks:
-        return None
-
-    # Split into chunks to avoid hitting agy context limits
-    chunks: list[list[str]] = []
-    cur: list[str] = []
-    for b in blocks:
-        cur.append(b)
-        if len(cur) >= AGY_CHUNK_LINES:
-            chunks.append(cur)
-            cur = []
-    if cur:
-        chunks.append(cur)
-
-    translated_blocks: list[str] = []
-    total = len(chunks)
-    for i, chunk in enumerate(chunks):
-        srt_chunk = "\n\n".join(chunk)
-        prompt = (
-            "Translate this SRT subtitle file to Simplified Chinese. "
-            "Output ONLY the raw SRT content with the same block numbers and timecodes unchanged. "
-            "Translate only the subtitle text lines. No explanations, no markdown:\n\n"
-            + srt_chunk
-        )
-        try:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                [agy, "--dangerously-skip-permissions"],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-            out = result.stdout.strip()
-            if not out:
-                log_event("warn", f"subtitle: agy returned empty for chunk {i}", imdb_id)
-                translated_blocks.extend(chunk)
-            else:
-                # Strip markdown code fences if agy wraps output
-                out = re.sub(r"^```[a-z]*\n?", "", out, flags=re.M)
-                out = re.sub(r"```$", "", out, flags=re.M).strip()
-                translated_blocks.extend(out.split("\n\n"))
-        except subprocess.TimeoutExpired:
-            log_event("warn", f"subtitle: agy timeout on chunk {i}, using originals", imdb_id)
-            translated_blocks.extend(chunk)
-        except Exception as e:
-            log_event("warn", f"subtitle: agy error on chunk {i}: {repr(e)}", imdb_id)
-            translated_blocks.extend(chunk)
-
-        if on_progress and total > 1:
-            pct = (i + 1) * 100 // total
-            on_progress(f"翻译进度 {pct}% ({i + 1}/{total} 段)")
-
-    out_path = video_path.with_name(f"{video_path.stem}.zh.srt")
-    out_path.write_text("\n\n".join(translated_blocks) + "\n", encoding="utf-8")
-    log_event("info", f"subtitle: agy translated → {out_path.name} ({len(translated_blocks)} blocks)", imdb_id)
-    return out_path
+def _clean_title(raw: str) -> str:
+    """'The Book of Life (2014) [2160p] [WEBRip]...' -> 'The Book of Life'."""
+    return re.split(r"\s*[\(\[]", raw or "", maxsplit=1)[0].strip()
 
 
-def _parse_srt(path: Path) -> list[tuple[str, str, str]]:
-    """Parse SRT → list of (index_str, timing_str, text_str)."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    blocks = re.split(r"\n{2,}", text.strip())
-    captions = []
-    for block in blocks:
-        lines = block.strip().splitlines()
-        if len(lines) >= 3:
-            idx = lines[0].strip()
-            timing = lines[1].strip()
-            body = " ".join(l.strip() for l in lines[2:] if l.strip())
-            body = re.sub(r"<[^>]+>", "", body)  # strip HTML tags
-            if body:
-                captions.append((idx, timing, body))
-    return captions
-
-
-def _write_srt(path: Path, captions: list[tuple[str, str, str]]) -> None:
-    blocks = []
-    for idx, timing, text in captions:
-        blocks.append(f"{idx}\n{timing}\n{text}")
-    path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
-
-
-async def _translate_batch(
-    client,
-    texts: list[str],
-    context: list[str] | None = None,
-) -> list[str]:
-    """Translate a batch of subtitle lines to Simplified Chinese."""
-    prompt = (
-        "Translate the following movie subtitle lines into Simplified Chinese.\n"
-        "Rules:\n"
-        "1. Return ONLY a JSON array of translated strings, same count as input.\n"
-        "2. Keep translations natural and colloquial, suitable for subtitles.\n"
-        "3. Preserve names, technical terms, and numbers.\n"
-        "4. Keep each line concise — subtitle timing is fixed.\n"
-        "5. NO explanations, NO extra text outside the JSON array."
-    )
-    if context:
-        prompt += f"\n\nPrevious lines for context (do NOT include in output):\n{json.dumps(context, ensure_ascii=False)}"
-
+async def _download_subdl_en(video_path: Path, imdb_id: str) -> Optional[Path]:
+    """Fetch an English subtitle from subdl.com and save as <stem>.en.srt."""
+    import io
+    import zipfile
     import httpx
-    for attempt in range(3):
-        try:
-            if attempt:
-                await asyncio.sleep(2 ** attempt)
-            resp = await client.post(
-                f"{settings.TRANS_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.TRANS_API_KEY}"},
-                json={
-                    "model": settings.TRANS_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are a professional movie subtitle translator. Output only JSON arrays."},
-                        {"role": "user", "content": f"{prompt}\n\nINPUT:\n{json.dumps(texts, ensure_ascii=False)}"},
-                    ],
-                },
-                timeout=60.0,
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
-            m = re.search(r"\[.*\]", content, re.DOTALL)
-            result = json.loads(m.group(0) if m else content)
-            if isinstance(result, list) and len(result) == len(texts):
-                return [str(r).strip() or orig for r, orig in zip(result, texts)]
-            raise ValueError(f"count mismatch: got {len(result)}, need {len(texts)}")
-        except Exception as e:
-            if attempt == 2:
-                log_event("warn", f"translate batch failed: {repr(e)}")
-                return texts  # return originals on total failure
-    return texts
 
-
-async def _translate_srt(
-    eng_srt: Path,
-    video_path: Path,
-    imdb_id: str,
-    on_progress: Optional[Callable[[str], None]] = None,
-) -> Optional[Path]:
-    """Translate English .srt to Chinese .srt and save alongside video."""
-    try:
-        import httpx
-        captions = _parse_srt(eng_srt)
-        if not captions:
-            return None
-
-        batch_size = settings.TRANS_BATCH_SIZE
-
-        batches = [captions[i:i+batch_size] for i in range(0, len(captions), batch_size)]
-        translated_texts: dict[int, list[str]] = {}
-        total = len(batches)
-        # Milestones at 25%, 50%, 75%
-        milestones = {max(1, total * p // 100) for p in (25, 50, 75)}
-
-        proxy = settings.YTS_API_PROXY or None
-        async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            for batch_idx, batch in enumerate(batches):
-                texts = [c[2] for c in batch]
-                ctx = translated_texts[batch_idx - 1][-3:] if batch_idx > 0 else None
-                result = await _translate_batch(client, texts, ctx)
-                translated_texts[batch_idx] = result
-                if on_progress and (batch_idx + 1) in milestones:
-                    pct = (batch_idx + 1) * 100 // total
-                    on_progress(f"翻译进度 {pct}% ({batch_idx + 1}/{total} 批)")
-
-        # Rebuild captions with translated text
-        out_captions = []
-        for batch_idx, batch in enumerate(batches):
-            zh_texts = translated_texts.get(batch_idx, [c[2] for c in batch])
-            for (idx, timing, _orig), zh_text in zip(batch, zh_texts):
-                out_captions.append((idx, timing, zh_text))
-
-        # Save as video_stem.zh.srt
-        out_path = video_path.with_name(f"{video_path.stem}.zh.srt")
-        _write_srt(out_path, out_captions)
-        log_event("info", f"subtitle: AI translated → {out_path.name} ({len(out_captions)} lines)", imdb_id)
-        return out_path
-
-    except Exception as e:
-        log_event("error", f"subtitle translate: {repr(e)}", imdb_id)
+    movie = get_movie(imdb_id) or {}
+    film_name = _clean_title(movie.get("title", ""))
+    year = movie.get("year")
+    if not film_name:
         return None
 
+    proxy = settings.SUB_PROXY or None
+    params = {
+        "api_key": settings.SUBDL_API_KEY,
+        "film_name": film_name,
+        "languages": "EN",
+        "type": "movie",
+        "subs_per_page": 10,
+    }
+    if year:
+        params["year"] = year
 
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=proxy, follow_redirects=True) as cli:
+            r = await cli.get("https://api.subdl.com/api/v1/subtitles", params=params)
+            r.raise_for_status()
+            data = r.json()
+            subs = data.get("subtitles") or []
+            if not subs:
+                log_event("info", f"subtitle: subdl no EN result for '{film_name}'", imdb_id)
+                return None
+
+            for sub in subs:
+                url = sub.get("url")
+                if not url:
+                    continue
+                zip_url = url if url.startswith("http") else f"https://dl.subdl.com{url}"
+                zr = await cli.get(zip_url)
+                if zr.status_code != 200:
+                    continue
+                try:
+                    zf = zipfile.ZipFile(io.BytesIO(zr.content))
+                except zipfile.BadZipFile:
+                    continue
+                names = [n for n in zf.namelist() if n.lower().endswith(".srt")]
+                if not names:
+                    continue
+                raw = zf.read(names[0])
+                text = raw.decode("utf-8", errors="replace")
+                out = video_path.parent / f"{video_path.stem}.en.srt"
+                out.write_text(text, encoding="utf-8")
+                log_event("info", f"subtitle: subdl EN downloaded ({sub.get('release_name','')})", imdb_id)
+                return out
+    except Exception as e:
+        log_event("warn", f"subtitle: subdl fetch failed: {repr(e)}", imdb_id)
+    return None

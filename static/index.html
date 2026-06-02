@@ -982,13 +982,13 @@ createApp({
             return ({discovered:'p-slate',queued:'p-amber',downloading:'p-blue',seeding:'p-indigo',paused:'p-amber',done:'p-green',error:'p-red',skipped:'p-slate'})[s]||'p-slate';
         }
         function subIcon(s) {
-            return ({searching:'ph-spinner-gap',found:'ph-check-circle',missing:'ph-prohibit',error:'ph-warning-circle'})[s]||'ph-translate';
+            return ({searching:'ph-spinner-gap',found:'ph-check-circle',zh:'ph-check-circle',en_only:'ph-translate',missing:'ph-prohibit',no_subtitle:'ph-prohibit',error:'ph-warning-circle'})[s]||'ph-translate';
         }
         function subColor(s) {
-            return ({searching:'#a5b4fc',found:'#6ee7b7',missing:'var(--t4)',error:'#fca5a5'})[s]||'var(--t3)';
+            return ({searching:'#a5b4fc',found:'#6ee7b7',zh:'#6ee7b7',en_only:'#fcd34d',missing:'var(--t4)',no_subtitle:'var(--t4)',error:'#fca5a5'})[s]||'var(--t3)';
         }
         function subLabel(s) {
-            return ({pending:'未处理',searching:'抓取中…',found:'字幕已就位',missing:'未找到字幕',error:'抓取出错'})[s]||s;
+            return ({pending:'未处理',searching:'抓取中…',found:'字幕已就位',zh:'中文字幕已就位',en_only:'英文字幕 · 待手动翻译',missing:'未找到字幕',no_subtitle:'无字幕 · 需手动处理',error:'抓取出错'})[s]||s;
         }
 
         // ── API calls ───────────────────────────────────────────
@@ -1108,10 +1108,10 @@ createApp({
             });
             es.addEventListener('sub.found', e => {
                 const d = JSON.parse(e.data);
-                updateMovieField(d.imdb_id, {subtitle_status:'found',subtitle_path:d.path});
+                updateMovieField(d.imdb_id, {subtitle_status:d.kind||'found',subtitle_path:d.path});
                 const m = movies.value.find(x => x.imdb_id === d.imdb_id);
                 const t = m ? shortTitle(m.title) : d.imdb_id;
-                pushLog('info', `字幕完成 ✓ → ${t}`);
+                pushLog('info', d.kind==='en_only' ? `英文字幕就位(待手翻) → ${t}` : `中文字幕完成 ✓ → ${t}`);
             });
             es.addEventListener('sub.missing', e => {
                 const d = JSON.parse(e.data);

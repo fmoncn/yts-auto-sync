@@ -52,8 +52,13 @@ def _publish(event: dict) -> None:
 async def _fetch_rss(quality: str) -> list[dict]:
     url = settings.YTS_RSS_URL.format(quality=quality)
     proxy = settings.YTS_RSS_PROXY or None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     async with httpx.AsyncClient(timeout=20, proxy=proxy, follow_redirects=True) as cli:
-        r = await cli.get(url, headers={"User-Agent": "Mozilla/5.0 yts-auto-sync"})
+        r = await cli.get(url, headers=headers)
         r.raise_for_status()
         feed = feedparser.parse(r.text)
 
@@ -228,13 +233,45 @@ async def _enrich_from_yts_api(movie: dict) -> None:
 def _should_auto_download(m: dict) -> tuple[bool, str]:
     if not settings.AUTO_DOWNLOAD:
         return False, "auto disabled"
-    if settings.MIN_IMDB_RATING and m.get("rating") and m["rating"] < settings.MIN_IMDB_RATING:
-        return False, f"rating {m['rating']} < {settings.MIN_IMDB_RATING}"
+        
     if settings.MAX_SIZE_GB and m.get("size_bytes"):
         gb = m["size_bytes"] / (1024**3)
         if gb > settings.MAX_SIZE_GB:
             return False, f"size {gb:.1f}G > {settings.MAX_SIZE_GB}G"
-    return True, "ok"
+            
+    # Load scoring rules
+    try:
+        import json
+        rules = json.loads(getattr(settings, "AUTO_DOWNLOAD_RULES", "{}"))
+    except Exception:
+        rules = {}
+        
+    genre_rules = rules.get("genres_bonus", {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20})
+    min_auto_score = rules.get("min_auto_score", 80)
+    min_review_score = rules.get("min_review_score", 60)
+
+    base_score = 0
+    rating = m.get("rating") or 0.0
+    if rating > 0:
+        base_score = (rating - 5.0) * 10
+    else:
+        return False, "no rating available"
+
+    bonus = 0
+    movie_genres = [g.strip() for g in (m.get("genres") or "").split(",")]
+    for g in movie_genres:
+        if g in genre_rules:
+            bonus += genre_rules[g]
+
+    total_score = base_score + bonus
+
+    if total_score >= min_auto_score:
+        return True, f"score {total_score:.1f} (rating {rating}, bonus {bonus})"
+        
+    if total_score >= min_review_score:
+        return False, f"needs review: score {total_score:.1f} (rating {rating}, bonus {bonus})"
+        
+    return False, f"low score {total_score:.1f} (rating {rating}, bonus {bonus})"
 
 
 async def _enqueue_to_qbit(m: dict) -> None:
@@ -293,13 +330,36 @@ async def poll_once() -> dict:
 
 async def run_watcher(stop_event: asyncio.Event) -> None:
     log_event("info", "RSS watcher started")
+    consecutive_failures = 0
+    import notifier
+    
     while not stop_event.is_set():
         try:
-            await poll_once()
+            summary = await poll_once()
+            if summary["fetched"] == 0 and summary["errors"]:
+                consecutive_failures += 1
+            else:
+                if consecutive_failures >= 3:
+                    log_event("info", "RSS connection recovered")
+                    asyncio.create_task(notifier.notify("恢复正常", "RSS 代理/网络连接已恢复"))
+                consecutive_failures = 0
+                
+            if consecutive_failures == 3:
+                log_event("error", "RSS poll circuit breaker triggered (3 consecutive failures)")
+                asyncio.create_task(notifier.notify("🚨 告警", "v2raya/RSS 代理连接连续失败3次，轮询进入退避模式"))
+                
+            # Adaptive sleep
+            if consecutive_failures >= 3:
+                timeout = min(3600, settings.YTS_POLL_INTERVAL * (2 ** (consecutive_failures - 3)))
+            else:
+                timeout = settings.YTS_POLL_INTERVAL
+                
         except Exception as e:
             log_event("error", f"watcher loop: {repr(e)}\n{traceback.format_exc()[-300:]}")
+            timeout = settings.YTS_POLL_INTERVAL
+            
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=settings.YTS_POLL_INTERVAL)
+            await asyncio.wait_for(stop_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             pass
     log_event("info", "RSS watcher stopped")

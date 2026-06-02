@@ -39,12 +39,15 @@ _backup_task: Optional[asyncio.Task] = None
 # ──────────────────────────────────────────────────────────────────
 # Auth
 # ──────────────────────────────────────────────────────────────────
-async def _check_token(authorization: Optional[str] = Header(None)) -> None:
+async def _check_token(authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)) -> None:
     if not settings.API_TOKEN:
         return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing Authorization header")
-    if authorization[7:] != settings.API_TOKEN:
+    req_token = token
+    if authorization and authorization.startswith("Bearer "):
+        req_token = authorization[7:]
+    if not req_token:
+        raise HTTPException(401, "Missing token")
+    if req_token != settings.API_TOKEN:
         raise HTTPException(403, "Invalid token")
 
 _auth = Depends(_check_token)
@@ -60,6 +63,19 @@ async def lifespan(app: FastAPI):
     _watcher_task = asyncio.create_task(rss_watcher.run_watcher(_stop_event))
     _progress_task = asyncio.create_task(_progress_loop(_stop_event))
     _backup_task = asyncio.create_task(_backup_loop(_stop_event))
+    
+    # Recover stuck subtitles
+    stuck_movies = list_movies()
+    recovered = 0
+    for m in stuck_movies:
+        if m.get("subtitle_status") in ("searching", "translating"):
+            update_movie(m["imdb_id"], subtitle_status="pending")
+            if m.get("final_video"):
+                asyncio.create_task(_fetch_sub(m["imdb_id"], Path(m["final_video"])))
+            recovered += 1
+    if recovered > 0:
+        log_event("info", f"recovered {recovered} stuck subtitle tasks")
+        
     log_event("info", f"yts-auto-sync started on :{settings.YTS_PORT}")
     yield
     if _stop_event:
@@ -136,6 +152,16 @@ async def _progress_loop(stop: asyncio.Event) -> None:
                         "下载完成",
                         f"{m['title']} ({m.get('year','')})\n{m.get('quality','')}"
                     ))
+
+            # Clean up ghost downloading/seeding tasks that are no longer in qBit
+            current_hashes = {t["hash"].lower() for t in torrents if t and "hash" in t}
+            for status in ("downloading", "seeding"):
+                for m in list_movies(status=status):
+                    h = m.get("qbit_hash")
+                    if h and h.lower() not in current_hashes:
+                        update_movie(m["imdb_id"], status="error", note="Torrent was removed from qBittorrent")
+                        log_event("warn", f"torrent {m['title']} was removed from qBit, marking status as error", m["imdb_id"])
+                        rss_watcher._publish({"type": "movie.updated", "imdb_id": m["imdb_id"], "status": "error"})
         except Exception as e:
             log_event("error", f"progress loop: {repr(e)}")
 
@@ -284,13 +310,17 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
     try:
         srt = await subtitle_fetcher.fetch_for_video(video_path, imdb_id, on_progress=_progress)
         if srt:
-            update_movie(imdb_id, subtitle_status="found", subtitle_path=str(srt))
-            log_event("info", f"subtitle: {srt.name}", imdb_id)
-            rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt)})
-            asyncio.create_task(notifier.notify("字幕就位", f"{srt.name}"))
+            # .zh.srt -> ready Chinese; .en.srt -> English only, awaiting manual translation
+            is_zh = srt.name.lower().endswith(".zh.srt")
+            status = "zh" if is_zh else "en_only"
+            update_movie(imdb_id, subtitle_status=status, subtitle_path=str(srt))
+            log_event("info", f"subtitle [{status}]: {srt.name}", imdb_id)
+            rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": status})
+            title = "中文字幕就位" if is_zh else "英文字幕就位 · 待手动翻译"
+            asyncio.create_task(notifier.notify(title, f"{srt.name}"))
         else:
-            update_movie(imdb_id, subtitle_status="missing")
-            log_event("warn", "no subtitle found", imdb_id)
+            update_movie(imdb_id, subtitle_status="no_subtitle")
+            log_event("warn", "no subtitle found (embedded + subdl all missed)", imdb_id)
             rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
     except Exception as e:
         update_movie(imdb_id, subtitle_status="error", note=str(e))
@@ -524,7 +554,7 @@ def api_events(limit: int = 200):
 # ──────────────────────────────────────────────────────────────────
 # SSE stream
 # ──────────────────────────────────────────────────────────────────
-@app.get("/api/stream")
+@app.get("/api/stream", dependencies=[_auth])
 async def api_stream():
     q = rss_watcher.subscribe()
 

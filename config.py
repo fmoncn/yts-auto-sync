@@ -8,8 +8,8 @@ class Settings(BaseSettings):
     YTS_HOST: str = "0.0.0.0"
     YTS_PORT: int = 4003
 
-    YTS_RSS_URL: str = "https://yts.am/rss/0/{quality}/all/7/en"
-    YTS_QUALITIES: str = "1080p"
+    YTS_RSS_URL: str = "https://yts.mx/rss/0/{quality}/all/7/en"
+    YTS_QUALITIES: str = "2160p"
     YTS_POLL_INTERVAL: int = 600
     YTS_RSS_PROXY: str = ""
     YTS_API_PROXY: str = "http://127.0.0.1:20171"
@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     CLOUD_DEST_DIR: str = "电影"   # remote path inside WebDAV root
 
     AUTO_DOWNLOAD: bool = False
+    # AUTO_DOWNLOAD_RULES determines scoring bonuses/penalties and thresholds
+    AUTO_DOWNLOAD_RULES: str = '{"genres_bonus": {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20}, "min_auto_score": 80, "min_review_score": 65}'
     MIN_IMDB_RATING: float = 6.5
     MAX_SIZE_GB: float = 12.0
     AUTO_SUBTITLE: bool = True
@@ -67,13 +69,21 @@ class Settings(BaseSettings):
     def host_path(self, container_path: str) -> str:
         if not container_path:
             return container_path
+        
+        c_path = Path(container_path)
         for pair in self.QBIT_PATH_MAP.split(";"):
             if ":" not in pair:
                 continue
             src, dst = pair.split(":", 1)
-            src, dst = src.strip(), dst.strip()
-            if container_path == src or container_path.startswith(src + "/"):
-                return dst + container_path[len(src):]
+            src_path = Path(src.strip())
+            dst_path = Path(dst.strip())
+            try:
+                # 严格判定前缀，且通过 relative_to 解析
+                if c_path == src_path or c_path.is_relative_to(src_path):
+                    rel = c_path.relative_to(src_path)
+                    return str(dst_path / rel)
+            except ValueError:
+                pass
         return container_path
 
     @property

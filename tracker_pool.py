@@ -15,9 +15,29 @@ _lock = asyncio.Lock()
 async def get_trackers(force: bool = False) -> List[str]:
     global _cache, _fetched_at
     ttl = settings.TRACKERS_REFRESH_HOURS * 3600
+    cache_file = settings.data_dir / "trackers.txt"
+    
     async with _lock:
         if not force and _cache and (time.time() - _fetched_at) < ttl:
             return _cache
+            
+        # Try loading from local file if memory cache is empty
+        if not force and not _cache and cache_file.exists():
+            try:
+                content = cache_file.read_text(encoding="utf-8")
+                trackers = [
+                    line.strip()
+                    for line in content.splitlines()
+                    if line.strip() and not line.startswith("#")
+                ]
+                if trackers:
+                    _cache = trackers
+                    _fetched_at = cache_file.stat().st_mtime
+                    if (time.time() - _fetched_at) < ttl:
+                        return _cache
+            except Exception:
+                pass
+                
         try:
             async with httpx.AsyncClient(timeout=15) as cli:
                 r = await cli.get(settings.TRACKERS_URL)
@@ -30,6 +50,10 @@ async def get_trackers(force: bool = False) -> List[str]:
             if trackers:
                 _cache = trackers
                 _fetched_at = time.time()
+                try:
+                    cache_file.write_text("\n".join(trackers), encoding="utf-8")
+                except Exception:
+                    pass
         except Exception:
             if not _cache:
                 _cache = _FALLBACK
