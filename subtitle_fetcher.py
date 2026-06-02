@@ -271,3 +271,126 @@ async def _download_subdl_en(video_path: Path, imdb_id: str) -> Optional[Path]:
     except Exception as e:
         log_event("warn", f"subtitle: subdl fetch failed: {repr(e)}", imdb_id)
     return None
+
+
+# ────────────────────────────────────────────────────────────────
+# On-demand AI translation: .en.srt -> .zh.srt  (HTTP, concurrent)
+# ────────────────────────────────────────────────────────────────
+def _parse_srt(path: Path) -> list[tuple[str, str, str]]:
+    """Parse SRT -> list of (index_str, timing_str, text_str)."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    blocks = re.split(r"\n{2,}", text.strip())
+    captions = []
+    for block in blocks:
+        lines = block.strip().splitlines()
+        if len(lines) >= 3:
+            idx = lines[0].strip()
+            timing = lines[1].strip()
+            body = " ".join(l.strip() for l in lines[2:] if l.strip())
+            body = re.sub(r"<[^>]+>", "", body)
+            if body:
+                captions.append((idx, timing, body))
+    return captions
+
+
+def _write_srt(path: Path, captions: list[tuple[str, str, str]]) -> None:
+    blocks = [f"{idx}\n{timing}\n{text}" for idx, timing, text in captions]
+    path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+
+
+async def translate_en_to_zh(
+    video_path: Path,
+    imdb_id: str,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> Optional[Path]:
+    """Translate <stem>.en.srt -> <stem>.zh.srt using the configured HTTP LLM endpoint."""
+    import json
+    import httpx
+
+    en_srt = video_path.with_suffix("").with_suffix("").parent / f"{video_path.stem}.en.srt"
+    # Also accept video_path itself as directory hint
+    if not en_srt.exists():
+        en_srt = video_path.parent / f"{video_path.stem}.en.srt"
+    if not en_srt.exists():
+        log_event("warn", "subtitle: no .en.srt found to translate", imdb_id)
+        return None
+
+    captions = _parse_srt(en_srt)
+    if not captions:
+        return None
+
+    batch_size = getattr(settings, "TRANS_BATCH_SIZE", 20)
+    concurrent = getattr(settings, "TRANS_CONCURRENT", 6)
+    model = getattr(settings, "TRANS_MODEL", "deepseek-v4-flash")
+    base_url = getattr(settings, "TRANS_BASE_URL", "")
+    api_key = getattr(settings, "TRANS_API_KEY", "")
+    proxy = settings.YTS_API_PROXY or None
+
+    if not base_url:
+        log_event("warn", "subtitle: TRANS_BASE_URL not set, cannot translate", imdb_id)
+        return None
+
+    batches = [captions[i:i+batch_size] for i in range(0, len(captions), batch_size)]
+    total = len(batches)
+    results: dict[int, list[str]] = {}
+    sem = asyncio.Semaphore(concurrent)
+
+    async def _translate_batch(client: httpx.AsyncClient, idx: int, batch: list) -> None:
+        texts = [c[2] for c in batch]
+        async with sem:
+            for attempt in range(3):
+                try:
+                    if attempt:
+                        await asyncio.sleep(2 ** attempt)
+                    resp = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json={
+                            "model": model,
+                            "messages": [
+                                {"role": "system", "content": "You are a professional movie subtitle translator. Output only JSON arrays."},
+                                {"role": "user", "content": (
+                                    "Translate the following subtitle lines to Simplified Chinese. "
+                                    "Return ONLY a JSON array of translated strings, same count as input. "
+                                    "Keep lines concise for subtitles. No explanations.\n\n"
+                                    f"INPUT:\n{json.dumps(texts, ensure_ascii=False)}"
+                                )},
+                            ],
+                        },
+                        timeout=60.0,
+                    )
+                    resp.raise_for_status()
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    m = re.search(r"\[.*\]", content, re.DOTALL)
+                    parsed = json.loads(m.group(0) if m else content)
+                    if isinstance(parsed, list) and len(parsed) == len(texts):
+                        results[idx] = [str(r).strip() or orig for r, orig in zip(parsed, texts)]
+                        return
+                    raise ValueError(f"count mismatch: {len(parsed)} vs {len(texts)}")
+                except Exception as e:
+                    if attempt == 2:
+                        log_event("warn", f"subtitle: translate batch {idx} failed: {repr(e)}", imdb_id)
+                        results[idx] = texts
+
+    log_event("info", f"subtitle: translating {len(captions)} lines in {total} batches (concurrent={concurrent})", imdb_id)
+    if on_progress:
+        on_progress(f"AI 翻译中 · {len(captions)} 行")
+
+    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        tasks = [_translate_batch(client, i, batch) for i, batch in enumerate(batches)]
+        for i, coro in enumerate(asyncio.as_completed(tasks)):
+            await coro
+            if on_progress:
+                done = sum(1 for k in results if k is not None)
+                on_progress(f"翻译进度 {done*100//total}% ({done}/{total} 批)")
+
+    out_captions = []
+    for i, batch in enumerate(batches):
+        zh_texts = results.get(i, [c[2] for c in batch])
+        for (idx, timing, _), zh in zip(batch, zh_texts):
+            out_captions.append((idx, timing, zh))
+
+    out_path = en_srt.with_name(f"{video_path.stem}.zh.srt")
+    _write_srt(out_path, out_captions)
+    log_event("info", f"subtitle: translated -> {out_path.name} ({len(out_captions)} lines)", imdb_id)
+    return out_path

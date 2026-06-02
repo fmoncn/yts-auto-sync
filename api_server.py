@@ -364,6 +364,40 @@ async def api_resub(imdb_id: str):
     return {"ok": True}
 
 
+@app.post("/api/movies/{imdb_id}/translate", dependencies=[_auth])
+async def api_translate(imdb_id: str):
+    """Trigger on-demand AI translation of .en.srt -> .zh.srt."""
+    m = get_movie(imdb_id)
+    if not m or not m.get("final_video"):
+        raise HTTPException(404, "no downloaded video")
+    asyncio.create_task(_do_translate(imdb_id, Path(m["final_video"])))
+    return {"ok": True}
+
+
+async def _do_translate(imdb_id: str, video_path: Path) -> None:
+    update_movie(imdb_id, subtitle_status="translating")
+    rss_watcher._publish({"type": "sub.searching", "imdb_id": imdb_id})
+
+    def _progress(msg: str) -> None:
+        rss_watcher._publish({"type": "sub.progress", "imdb_id": imdb_id, "msg": msg})
+
+    try:
+        srt = await subtitle_fetcher.translate_en_to_zh(video_path, imdb_id, on_progress=_progress)
+        if srt:
+            update_movie(imdb_id, subtitle_status="zh", subtitle_path=str(srt))
+            log_event("info", f"subtitle translated: {srt.name}", imdb_id)
+            rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": "zh"})
+            asyncio.create_task(notifier.notify("翻译完成", srt.name))
+        else:
+            update_movie(imdb_id, subtitle_status="en_only")
+            log_event("warn", "translate: no result, keeping en_only", imdb_id)
+            rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
+    except Exception as e:
+        update_movie(imdb_id, subtitle_status="en_only", note=str(e))
+        log_event("error", f"translate: {repr(e)}", imdb_id)
+        rss_watcher._publish({"type": "sub.error", "imdb_id": imdb_id, "error": str(e)})
+
+
 @app.post("/api/movies/{imdb_id}/organize", dependencies=[_auth])
 async def api_organize(imdb_id: str):
     m = get_movie(imdb_id)

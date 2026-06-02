@@ -285,6 +285,8 @@
         .btn-indigo{color:#a5b4fc;background:rgba(99,102,241,.1);border-color:rgba(99,102,241,.3);}
         .btn-indigo:hover{background:rgba(99,102,241,.2);}
         .btn-amber{color:#fcd34d;background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);}
+        .btn-green{color:#6ee7b7;background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3);}
+        .btn-green:hover{background:rgba(16,185,129,.2);}
         .btn-slate{color:var(--t3);background:var(--s3);border-color:var(--b2);}
         .btn-slate:hover{color:var(--t1);}
         .btn-danger{color:#fca5a5;background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.25);}
@@ -640,6 +642,9 @@
                                     @click.stop="downloadMovie(m)" class="btn btn-icon btn-indigo tap-scale" title="下载">
                                 <i class="ph ph-download-simple" style="font-size:14px;"></i>
                             </button>
+                            <button v-if="m.subtitle_status==='en_only'" @click.stop="translateSubtitle(m)" class="btn btn-icon btn-green tap-scale" title="AI 翻译">
+                                <i class="ph ph-magic-wand" style="font-size:14px;"></i>
+                            </button>
                             <button v-if="m.final_video" @click.stop="refetchSubtitle(m)" class="btn btn-icon btn-amber tap-scale" title="重抓字幕">
                                 <i class="ph ph-translate" style="font-size:14px;"></i>
                             </button>
@@ -763,6 +768,10 @@
                         <button v-if="['discovered','skipped','error'].includes(activeMovie.status)"
                                 @click="downloadMovie(activeMovie)" class="btn btn-md btn-indigo tap-scale" style="flex:1;">
                             <i class="ph ph-download-simple"></i> 下载
+                        </button>
+                        <button v-if="activeMovie.subtitle_status==='en_only'"
+                                @click="translateSubtitle(activeMovie)" class="btn btn-md btn-green tap-scale" style="flex:1;">
+                            <i class="ph ph-magic-wand"></i> AI 翻译
                         </button>
                         <button v-if="activeMovie.final_video"
                                 @click="refetchSubtitle(activeMovie)" class="btn btn-md btn-amber tap-scale" style="flex:1;">
@@ -982,13 +991,13 @@ createApp({
             return ({discovered:'p-slate',queued:'p-amber',downloading:'p-blue',seeding:'p-indigo',paused:'p-amber',done:'p-green',error:'p-red',skipped:'p-slate'})[s]||'p-slate';
         }
         function subIcon(s) {
-            return ({searching:'ph-spinner-gap',found:'ph-check-circle',zh:'ph-check-circle',en_only:'ph-translate',missing:'ph-prohibit',no_subtitle:'ph-prohibit',error:'ph-warning-circle'})[s]||'ph-translate';
+            return ({searching:'ph-spinner-gap',translating:'ph-spinner-gap',found:'ph-check-circle',zh:'ph-check-circle',en_only:'ph-translate',missing:'ph-prohibit',no_subtitle:'ph-prohibit',error:'ph-warning-circle'})[s]||'ph-translate';
         }
         function subColor(s) {
-            return ({searching:'#a5b4fc',found:'#6ee7b7',zh:'#6ee7b7',en_only:'#fcd34d',missing:'var(--t4)',no_subtitle:'var(--t4)',error:'#fca5a5'})[s]||'var(--t3)';
+            return ({searching:'#a5b4fc',translating:'#a5b4fc',found:'#6ee7b7',zh:'#6ee7b7',en_only:'#fcd34d',missing:'var(--t4)',no_subtitle:'var(--t4)',error:'#fca5a5'})[s]||'var(--t3)';
         }
         function subLabel(s) {
-            return ({pending:'未处理',searching:'抓取中…',found:'字幕已就位',zh:'中文字幕已就位',en_only:'英文字幕 · 待手动翻译',missing:'未找到字幕',no_subtitle:'无字幕 · 需手动处理',error:'抓取出错'})[s]||s;
+            return ({pending:'未处理',searching:'抓取中…',translating:'AI 翻译中…',found:'字幕已就位',zh:'中文字幕已就位',en_only:'英文字幕 · 待翻译',missing:'未找到字幕',no_subtitle:'无字幕 · 需手动处理',error:'抓取出错'})[s]||s;
         }
 
         // ── API calls ───────────────────────────────────────────
@@ -1028,6 +1037,14 @@ createApp({
         async function refetchSubtitle(m) {
             try { await fetch(`/api/movies/${m.imdb_id}/subtitle`,{method:'POST'}); toast('字幕抓取已触发'); }
             catch(e) { toast('字幕请求失败'); }
+        }
+        async function translateSubtitle(m) {
+            try {
+                await fetch(`/api/movies/${m.imdb_id}/translate`,{method:'POST'});
+                toast('AI 翻译已触发');
+                updateMovieField(m.imdb_id, {subtitle_status:'translating'});
+            }
+            catch(e) { toast('翻译请求失败'); }
         }
         async function removeMovie(m) {
             if (!confirm(`移除 "${shortTitle(m.title)}"？`)) return;
@@ -1150,7 +1167,7 @@ createApp({
 
         return {
             theme, toggleTheme, movies, live, logs, config, qbit, disk,
-            connected, refreshing, refreshRss, downloadMovie, refetchSubtitle, removeMovie,
+            connected, refreshing, refreshRss, downloadMovie, refetchSubtitle, translateSubtitle, removeMovie,
             activeId, activeMovie, selectMovie, switchToDetail, closeDetail,
             filter, filters, counts, filteredMovies, stats,
             searchQ, sortBy, minRating, qualityFilter, switches,
