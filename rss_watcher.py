@@ -309,7 +309,10 @@ async def poll_once() -> dict:
         if items is None:
             continue
         summary["fetched"] += len(items)
+        min_year = time.localtime().tm_year - 2  # keep last 3 years
         for m in items:
+            if m.get("year") and m["year"] < min_year:
+                continue  # skip movies older than 3 years
             is_new = upsert_movie(m)
             if is_new:
                 summary["new"] += 1

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     YTS_HOST: str = "0.0.0.0"
     YTS_PORT: int = 4003
 
-    YTS_RSS_URL: str = "https://yts.mx/rss/0/{quality}/all/7/en"
+    YTS_RSS_URL: str = "https://yts.mx/rss/0/{quality}/all/6/en"
     YTS_QUALITIES: str = "2160p"
     YTS_POLL_INTERVAL: int = 600
     YTS_RSS_PROXY: str = ""
