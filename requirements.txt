@@ -6,3 +6,4 @@ pydantic>=2.7
 pydantic-settings>=2.4
 python-dotenv>=1.0
 qbittorrent-api>=2024.12
+pypinyin>=0.51

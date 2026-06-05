@@ -10,7 +10,7 @@ import feedparser
 import httpx
 
 from config import settings
-from store import upsert_movie, update_movie, log_event, get_movie
+from store import upsert_movie, update_movie, log_event, get_movie, list_movies
 import tracker_pool
 import qbit_client
 
@@ -175,10 +175,11 @@ async def _enrich_from_yts_api(movie: dict) -> None:
         if re.match(r"^tt\d+$", movie.get("imdb_id", "")):
             params["imdb_id"] = movie["imdb_id"]
         else:
-            # Search by title + year
-            params["query_term"] = movie["title"]
-            if movie.get("year"):
-                params["query_term"] += f" {movie['year']}"
+            # Search by title + year — strip quality/encoding suffixes first
+            clean = re.sub(r"\s*\(\d{4}\).*", "", movie["title"]).strip()
+            clean = re.sub(r"\s*\[.*", "", clean).strip()
+            params["query_term"] = (f"{clean} {movie['year']}" if movie.get("year") else clean)
+            params["limit"] = 1
             params["limit"] = 1
 
         endpoint = (
@@ -229,6 +230,24 @@ async def _enrich_from_yts_api(movie: dict) -> None:
     except Exception as e:
         log_event("warn", f"YTS API enrich failed for {movie.get('title')}: {repr(e)}", movie["imdb_id"])
 
+
+
+def _find_active_duplicate(m: dict):
+    """Return existing record if same title+year already has an active status."""
+    active = {"downloading", "done", "seeding", "organizing"}
+    clean = re.sub(r"\s*\(\d{4}\).*", "", m.get("title", "")).strip()
+    clean = re.sub(r"\s*\[.*", "", clean).strip().lower()
+    year = m.get("year")
+    for ex in list_movies():
+        if ex["imdb_id"] == m["imdb_id"]:
+            continue
+        if ex.get("status") not in active and not ex.get("final_video"):
+            continue
+        ex_title = re.sub(r"\s*\(\d{4}\).*", "", ex.get("title", "")).strip()
+        ex_title = re.sub(r"\s*\[.*", "", ex_title).strip().lower()
+        if ex_title == clean and ex.get("year") == year:
+            return ex
+    return None
 
 def _should_auto_download(m: dict) -> tuple[bool, str]:
     if not settings.AUTO_DOWNLOAD:
@@ -320,12 +339,18 @@ async def poll_once() -> dict:
                 log_event("info", f"new RSS item: {m['title']}", m["imdb_id"])
                 # Enrich metadata from YTS API asynchronously
                 asyncio.create_task(_enrich_from_yts_api(m))
-                allow, reason = _should_auto_download(m)
-                if allow:
-                    await _enqueue_to_qbit(m)
-                    summary["queued"] += 1
+                dup = _find_active_duplicate(m)
+                if dup:
+                    note = f"duplicate: {dup['quality']} already {dup['status']}"
+                    update_movie(m["imdb_id"], status="skipped", note=note)
+                    log_event("info", f"skipped duplicate {m['title'][:40]}", m["imdb_id"])
                 else:
-                    update_movie(m["imdb_id"], status="skipped", note=reason)
+                    allow, reason = _should_auto_download(m)
+                    if allow:
+                        await _enqueue_to_qbit(m)
+                        summary["queued"] += 1
+                    else:
+                        update_movie(m["imdb_id"], status="skipped", note=reason)
     summary["ts"] = int(time.time())
     _publish({"type": "rss.polled", "summary": summary})
     return summary
@@ -334,8 +359,7 @@ async def poll_once() -> dict:
 async def run_watcher(stop_event: asyncio.Event) -> None:
     log_event("info", "RSS watcher started")
     consecutive_failures = 0
-    import notifier
-    
+
     while not stop_event.is_set():
         try:
             summary = await poll_once()
@@ -344,12 +368,10 @@ async def run_watcher(stop_event: asyncio.Event) -> None:
             else:
                 if consecutive_failures >= 3:
                     log_event("info", "RSS connection recovered")
-                    asyncio.create_task(notifier.notify("恢复正常", "RSS 代理/网络连接已恢复"))
                 consecutive_failures = 0
-                
+
             if consecutive_failures == 3:
                 log_event("error", "RSS poll circuit breaker triggered (3 consecutive failures)")
-                asyncio.create_task(notifier.notify("🚨 告警", "v2raya/RSS 代理连接连续失败3次，轮询进入退避模式"))
                 
             # Adaptive sleep
             if consecutive_failures >= 3:

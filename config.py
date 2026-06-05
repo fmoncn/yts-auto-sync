@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # 字幕翻译反代（复用 VSM 方案）
     TRANS_BASE_URL: str = "http://YOUR_LLM_HOST:8317/v1"
     TRANS_API_KEY: str = "cliproxy-local"
-    TRANS_MODEL: str = "gpt-5.4-mini"
+    TRANS_MODEL: str = "deepseek-v4-flash"
     TRANS_BATCH_SIZE: int = 20
     TRANS_CONCURRENT: int = 4
     # 开关：False=不翻译（依赖外部字幕源）
@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     LIBRARY_DIR: str = "/mnt/extdata/library"
     AUTO_ORGANIZE: bool = True
     DELETE_QBIT_AFTER_ORGANIZE: bool = True
+    CONVERT_TO_MP4: bool = True   # fast remux MKV→MP4 after download
+    PINYIN_NAMES: bool = True     # use Pinyin for folder/file names
     QBIT_PATH_MAP: str = "/downloads/movies:/mnt/extdata/movies;/downloads/incomplete:/mnt/extdata/torrents/incomplete"
 
     API_TOKEN: str = ""
@@ -65,6 +67,7 @@ class Settings(BaseSettings):
     NOTIFY_TELEGRAM_CHAT_ID: str = ""
     DISK_MIN_GB: float = 5.0
     DB_BACKUP_KEEP_DAYS: int = 7
+    LIBRARY_KEEP_DAYS: int = 30
 
     def host_path(self, container_path: str) -> str:
         if not container_path:

@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS movies (
     final_video    TEXT,
     subtitle_path  TEXT,
     subtitle_status TEXT,
-    note           TEXT
+    note           TEXT,
+    title_zh       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_movies_status ON movies(status);
 CREATE INDEX IF NOT EXISTS idx_movies_added  ON movies(added_at);
@@ -55,6 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_events_imdb ON events(imdb_id);
 _MIGRATIONS = [
     "ALTER TABLE movies ADD COLUMN synopsis TEXT",
     "ALTER TABLE movies ADD COLUMN imdb_url TEXT",
+    "ALTER TABLE movies ADD COLUMN title_zh TEXT",
 ]
 
 
@@ -92,7 +94,7 @@ def tx():
 
 _RUNTIME_FIELDS = {
     "status", "qbit_hash", "save_path", "final_video",
-    "subtitle_path", "subtitle_status", "note",
+    "subtitle_path", "subtitle_status", "note", "added_at",
 }
 
 

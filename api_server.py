@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -55,6 +56,15 @@ _auth = Depends(_check_token)
 
 # ──────────────────────────────────────────────────────────────────
 # Lifespan
+
+async def _enrich_missing_metadata() -> None:
+    """Startup: enrich movies missing synopsis/imdb_url via yts.bz API."""
+    await asyncio.sleep(8)
+    pending = [m for m in list_movies() if not m.get("synopsis") and m.get("title")]
+    for m in pending:
+        await rss_watcher._enrich_from_yts_api(m)
+        await asyncio.sleep(1.5)
+
 # ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,6 +73,7 @@ async def lifespan(app: FastAPI):
     _watcher_task = asyncio.create_task(rss_watcher.run_watcher(_stop_event))
     _progress_task = asyncio.create_task(_progress_loop(_stop_event))
     _backup_task = asyncio.create_task(_backup_loop(_stop_event))
+    asyncio.create_task(_enrich_missing_metadata())
     
     # Recover stuck subtitles
     stuck_movies = list_movies()
@@ -148,10 +159,6 @@ async def _progress_loop(stop: asyncio.Event) -> None:
                     log_event("info", f"download done: {m['title']}", m["imdb_id"])
                     rss_watcher._publish({"type": "movie.done", "imdb_id": m["imdb_id"]})
                     asyncio.create_task(_post_complete(m, t))
-                    asyncio.create_task(notifier.notify(
-                        "下载完成",
-                        f"{m['title']} ({m.get('year','')})\n{m.get('quality','')}"
-                    ))
 
             # Clean up ghost downloading/seeding tasks that are no longer in qBit
             current_hashes = {t["hash"].lower() for t in torrents if t and "hash" in t}
@@ -173,6 +180,31 @@ async def _progress_loop(stop: asyncio.Event) -> None:
             pass
 
 
+async def _cleanup_old_movies() -> None:
+    """Delete local files for movies older than LIBRARY_KEEP_DAYS days."""
+    keep_days = getattr(settings, "LIBRARY_KEEP_DAYS", 30)
+    cutoff = int(time.time()) - keep_days * 86400
+    removed = 0
+    for m in list_movies(limit=500):
+        if m.get("added_at", 0) > cutoff:
+            continue
+        video = m.get("final_video")
+        if not video:
+            continue
+        movie_dir = Path(video).parent
+        if not movie_dir.exists():
+            continue
+        try:
+            shutil.rmtree(str(movie_dir))
+            update_movie(m["imdb_id"], final_video=None, subtitle_path=None, note="local files deleted after retention period")
+            log_event("info", f"cleanup: removed {movie_dir.name} (>{keep_days}d)", m["imdb_id"])
+            removed += 1
+        except Exception as e:
+            log_event("warn", f"cleanup: {repr(e)}", m["imdb_id"])
+    if removed:
+        log_event("info", f"cleanup: removed {removed} movies older than {keep_days} days")
+
+
 async def _backup_loop(stop: asyncio.Event) -> None:
     """Daily DB backup."""
     while not stop.is_set():
@@ -188,6 +220,7 @@ async def _backup_loop(stop: asyncio.Event) -> None:
             dest = await asyncio.to_thread(backup_db)
             if dest:
                 log_event("info", f"DB backup: {dest.name}")
+            await _cleanup_old_movies()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -209,12 +242,89 @@ def _find_video(content: Path) -> Optional[Path]:
 _BAD_NAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def _clean_library_dirname(title: str, year: Optional[int]) -> str:
+def _title_initials(title: str, year: Optional[int]) -> str:
+    """Convert title to uppercase initials + year. e.g. 'Remarkably Bright Creatures' 2026 -> 'RBC2026'."""
+    clean = re.sub(r'\s*\[[^\]]*\]\s*', ' ', title or '').strip()
+    clean = re.sub(r'\s*\([^)]*\)\s*', ' ', clean).strip()
+    words = clean.split()
+    initials = ''.join(w[0].upper() for w in words if w and w[0].isalpha())
+    return f"{initials}{year}" if year else initials
+
+
+def _fetch_chinese_title_sync(title: str, year: Optional[int], imdb_id: str) -> Optional[str]:
+    """Query LLM for official Chinese movie title. Returns clean Chinese title or None."""
+    import httpx, re as _re
+    base_url = getattr(settings, "TRANS_BASE_URL", "")
+    api_key = getattr(settings, "TRANS_API_KEY", "")
+    model = getattr(settings, "TRANS_MODEL", "deepseek-v4-flash")
+    if not base_url:
+        return None
+    prompt = f"电影《{title}》({year})的官方简体中文译名？只回复片名，无则音译，不要书名号和年份。"
+    try:
+        r = httpx.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+            timeout=15,
+        )
+        r.raise_for_status()
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+        # Clean: remove 《》, trailing year, explanation lines
+        raw = raw.strip("《》").split("\n")[0].strip()
+        raw = _re.sub(r"\s*[（(]\d{4}[)）].*$", "", raw).strip()
+        raw = _re.sub(r"^.*(?:译名|片名)[为是：:]+\s*", "", raw).strip()
+        raw = raw.strip("《》").strip()
+        # Reject if result is too long or still English-only
+        if raw and len(raw) <= 30 and not _re.fullmatch(r"[A-Za-z0-9 ,.!?'\-:]+", raw):
+            return raw
+    except Exception as e:
+        log_event("warn", f"zh title lookup failed for {title}: {repr(e)}", imdb_id)
+    return None
+
+
+def _clean_library_dirname(title: str, year: Optional[int], title_zh: Optional[str] = None) -> str:
+    if settings.PINYIN_NAMES:
+        return _title_initials(title, year)
     name = re.sub(r"\s*\[[^\]]*\]\s*", " ", title or "").strip()
     if year and f"({year})" not in name:
         name = f"{name} ({year})"
     name = _BAD_NAME_RE.sub(" ", name)
     return re.sub(r"\s+", " ", name).strip() or "Unknown"
+
+
+def _remux_mkv_to_mp4(mkv_path: Path, imdb_id: str) -> Optional[Path]:
+    """Fast remux MKV to MP4 (stream copy, no re-encode). Returns MP4 path or None."""
+    if mkv_path.suffix.lower() != ".mkv":
+        return None
+    mp4_path = mkv_path.with_suffix(".mp4")
+    size_mb = mkv_path.stat().st_size / 1024 / 1024 if mkv_path.exists() else 0
+    timeout = max(300, int(60 + size_mb * 0.1))
+    try:
+        r = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", str(mkv_path),
+                "-map", "0:v:0", "-map", "0:a",
+                "-c", "copy",
+                str(mp4_path),
+            ],
+            capture_output=True,
+            timeout=timeout,
+        )
+        if r.returncode != 0:
+            log_event("error", f"remux: ffmpeg error: {r.stderr.decode(errors='replace')[-300:]}", imdb_id)
+            mp4_path.unlink(missing_ok=True)
+            return None
+        mkv_path.unlink(missing_ok=True)
+        log_event("info", f"remux: {mkv_path.name} → {mp4_path.name}", imdb_id)
+        return mp4_path
+    except subprocess.TimeoutExpired:
+        log_event("error", f"remux: timed out after {timeout}s", imdb_id)
+        mp4_path.unlink(missing_ok=True)
+        return None
+    except Exception as e:
+        log_event("error", f"remux: {repr(e)}", imdb_id)
+        mp4_path.unlink(missing_ok=True)
+        return None
 
 
 def organize_to_library(movie: dict, qbit_content_path: Optional[str]) -> Optional[Path]:
@@ -228,23 +338,34 @@ def organize_to_library(movie: dict, qbit_content_path: Optional[str]) -> Option
 
     lib_root = Path(settings.LIBRARY_DIR)
     lib_root.mkdir(parents=True, exist_ok=True)
-    dest_dir = lib_root / _clean_library_dirname(movie["title"], movie.get("year"))
+    dirname = _clean_library_dirname(movie["title"], movie.get("year"), movie.get("title_zh"))
+    dest_dir = lib_root / dirname
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / video.name
 
-    if dest.resolve() == video.resolve():
-        return dest
+    # Use clean Pinyin name for the file itself (not torrent filename)
+    if settings.PINYIN_NAMES:
+        file_stem = dirname
+    else:
+        file_stem = video.stem
+    dest = dest_dir / (file_stem + video.suffix.lower())
 
-    try:
-        shutil.move(str(video), str(dest))
-    except Exception as e:
-        log_event("error", f"organize mv: {repr(e)}", movie["imdb_id"])
-        return None
+    if dest.resolve() != video.resolve():
+        try:
+            shutil.move(str(video), str(dest))
+        except Exception as e:
+            log_event("error", f"organize mv: {repr(e)}", movie["imdb_id"])
+            return None
 
     # Extract ALL subtitle files from the torrent folder (incl. Subs/ subfolder)
     # YTS packs typically include 30+ language subs in a Subs/ directory
     torrent_root = src if src.is_dir() else src.parent
     extract_bundled_subs(torrent_root, dest_dir)
+
+    # Fast remux MKV → MP4 if enabled
+    if settings.CONVERT_TO_MP4 and dest.suffix.lower() == ".mkv":
+        mp4 = _remux_mkv_to_mp4(dest, movie["imdb_id"])
+        if mp4:
+            dest = mp4
 
     log_event("info", f"organized → {dest}", movie["imdb_id"])
     return dest
@@ -255,10 +376,24 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
     current = get_movie(movie["imdb_id"])
     if current and current.get("status") == "done" and current.get("final_video"):
         return  # already organized, skip duplicate trigger
+    if movie.get("qbit_hash"):
+        try:
+            await asyncio.to_thread(qbit_client.stop_torrent, movie["qbit_hash"])
+            log_event("info", "torrent stopped (no seeding)", movie["imdb_id"])
+        except Exception as e:
+            log_event("warn", f"stop torrent: {repr(e)}", movie["imdb_id"])
     raw = qbit_torrent.get("content_path") or qbit_torrent.get("save_path", "")
     content = settings.host_path(raw)
     new_video: Optional[Path] = None
     if settings.AUTO_ORGANIZE:
+        # Fetch Chinese title before organizing (for Pinyin naming)
+        if settings.PINYIN_NAMES and not movie.get("title_zh"):
+            zh = await asyncio.to_thread(
+                _fetch_chinese_title_sync, movie["title"], movie.get("year"), movie["imdb_id"]
+            )
+            if zh:
+                update_movie(movie["imdb_id"], title_zh=zh)
+                movie = {**movie, "title_zh": zh}
         new_video = await asyncio.to_thread(organize_to_library, movie, content)
 
     if new_video:
@@ -297,7 +432,7 @@ async def _upload_movie(imdb_id: str, movie_dir: Path) -> None:
     log_event("info", "upload: starting...", imdb_id)
     ok = await cloud_uploader.upload_movie(movie_dir, imdb_id)
     if ok:
-        asyncio.create_task(notifier.notify("上传完成", movie_dir.name))
+        log_event("info", f"upload: done {movie_dir.name}", imdb_id)
 
 
 async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
@@ -316,8 +451,6 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
             update_movie(imdb_id, subtitle_status=status, subtitle_path=str(srt))
             log_event("info", f"subtitle [{status}]: {srt.name}", imdb_id)
             rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": status})
-            title = "中文字幕就位" if is_zh else "英文字幕就位 · 待手动翻译"
-            asyncio.create_task(notifier.notify(title, f"{srt.name}"))
         else:
             update_movie(imdb_id, subtitle_status="no_subtitle")
             log_event("warn", "no subtitle found (embedded + subdl all missed)", imdb_id)

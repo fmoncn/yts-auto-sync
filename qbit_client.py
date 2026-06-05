@@ -89,6 +89,15 @@ def torrent_info(qbit_hash: str) -> Optional[dict]:
     return _row(arr[0]) if arr else None
 
 
+def stop_torrent(qbit_hash: str) -> None:
+    _ensure_login()
+    c = client()
+    try:
+        c.torrents_stop(torrent_hashes=qbit_hash)
+    except Exception:
+        c.torrents_pause(torrent_hashes=qbit_hash)
+
+
 def remove_torrent(qbit_hash: str, delete_files: bool = False) -> None:
     _ensure_login()
     client().torrents_delete(delete_files=delete_files, torrent_hashes=qbit_hash)

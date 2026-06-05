@@ -950,7 +950,7 @@ createApp({
         });
 
         const filteredMovies = computed(() => {
-            let list = filter.value === 'all' ? movies.value : movies.value.filter(m => m.status === filter.value);
+            let list = filter.value === 'all' ? movies.value.filter(m => m.status !== 'done') : movies.value.filter(m => m.status === filter.value);
             // Quality filter
             if (qualityFilter.value) {
                 list = list.filter(m => !m.quality || m.quality.toLowerCase().includes(qualityFilter.value.toLowerCase()));
