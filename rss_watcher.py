@@ -328,6 +328,9 @@ async def poll_once() -> dict:
         if items is None:
             continue
         summary["fetched"] += len(items)
+        # Sort by quality descending so 2160p is always processed before 1080p/720p
+        _Q = {"2160p": 3, "1080p": 2, "720p": 1}
+        items.sort(key=lambda x: _Q.get((x.get("quality") or "").lower(), 0), reverse=True)
         min_year = time.localtime().tm_year - 2  # keep last 3 years
         for m in items:
             if m.get("year") and m["year"] < min_year:
