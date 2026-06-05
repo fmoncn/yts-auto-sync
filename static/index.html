@@ -173,6 +173,8 @@
             .tab-backdrop{display:none!important;}
             /* fix input zoom on iOS */
             input:not([type=range]):not([type=checkbox]),select,textarea{font-size:16px!important;}
+            /* ensure scroll content clears fixed bottom nav on iOS */
+            .scroll-y{padding-bottom:calc(64px + env(safe-area-inset-bottom));}
         }
 
         /* ── Mobile header ─────────────────────────────── */
