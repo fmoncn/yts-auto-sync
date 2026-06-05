@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     TRANS_MODEL: str = "deepseek-v4-flash"
     TRANS_BATCH_SIZE: int = 20
     TRANS_CONCURRENT: int = 4
+    TRANS_PROXY: str = ""
     # 开关：False=不翻译（依赖外部字幕源）
     TRANS_ENABLED: bool = True
 

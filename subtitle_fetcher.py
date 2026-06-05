@@ -324,7 +324,7 @@ async def translate_en_to_zh(
     model = getattr(settings, "TRANS_MODEL", "deepseek-v4-flash")
     base_url = getattr(settings, "TRANS_BASE_URL", "")
     api_key = getattr(settings, "TRANS_API_KEY", "")
-    proxy = settings.YTS_API_PROXY or None
+    proxy = settings.TRANS_PROXY or None
 
     if not base_url:
         log_event("warn", "subtitle: TRANS_BASE_URL not set, cannot translate", imdb_id)
