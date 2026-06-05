@@ -66,13 +66,58 @@ _auth = Depends(_check_token)
 # ──────────────────────────────────────────────────────────────────
 # Lifespan
 
+async def _fetch_synopsis_zh(synopsis: str, imdb_id: str) -> Optional[str]:
+    import httpx
+    base_url = getattr(settings, "TRANS_BASE_URL", "")
+    api_key = getattr(settings, "TRANS_API_KEY", "")
+    model = getattr(settings, "TRANS_MODEL", "deepseek-v4-flash")
+    if not base_url or not synopsis:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=20) as cli:
+            r = await cli.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": model, "messages": [
+                    {"role": "user", "content": f"将以下电影简介翻译成简体中文，只输出翻译结果：\n\n{synopsis}"},
+                ]},
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        log_event("warn", f"synopsis translate failed: {repr(e)}", imdb_id)
+        return None
+
+
 async def _enrich_missing_metadata() -> None:
-    """Startup: enrich movies missing synopsis/imdb_url via yts.bz API."""
+    """Startup: enrich synopsis, then batch-fetch title_zh + synopsis_zh."""
     await asyncio.sleep(8)
+    # 1. Fill missing synopsis via YTS API
     pending = [m for m in list_movies() if not m.get("synopsis") and m.get("title")]
     for m in pending:
         await rss_watcher._enrich_from_yts_api(m)
         await asyncio.sleep(1.5)
+    # 2. Fill missing title_zh and synopsis_zh via translation API
+    if not settings.TRANS_ENABLED:
+        return
+    await asyncio.sleep(3)
+    for m in list_movies():
+        patch: dict = {}
+        if not m.get("title_zh") and m.get("title"):
+            zh = await asyncio.to_thread(
+                _fetch_chinese_title_sync, m["title"], m.get("year"), m["imdb_id"]
+            )
+            if zh:
+                patch["title_zh"] = zh
+        if not m.get("synopsis_zh") and m.get("synopsis"):
+            zh_syn = await _fetch_synopsis_zh(m["synopsis"], m["imdb_id"])
+            if zh_syn:
+                patch["synopsis_zh"] = zh_syn
+        if patch:
+            update_movie(m["imdb_id"], **patch)
+            rss_watcher._publish({"type": "movie.updated", "imdb_id": m["imdb_id"], **patch})
+        if patch:
+            await asyncio.sleep(1.2)
 
 # ──────────────────────────────────────────────────────────────────
 @asynccontextmanager

@@ -789,8 +789,8 @@
                     </div>
 
                     <!-- 剧情简介 -->
-                    <div v-if="activeMovie.synopsis" class="info-box" style="font-size:12px;color:var(--t3);line-height:1.6;">
-                        {{ activeMovie.synopsis }}
+                    <div v-if="activeMovie.synopsis_zh || activeMovie.synopsis" class="info-box" style="font-size:12px;color:var(--t3);line-height:1.6;">
+                        {{ activeMovie.synopsis_zh || activeMovie.synopsis }}
                     </div>
 
                     <!-- 下载进度 -->

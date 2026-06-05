@@ -57,6 +57,7 @@ _MIGRATIONS = [
     "ALTER TABLE movies ADD COLUMN synopsis TEXT",
     "ALTER TABLE movies ADD COLUMN imdb_url TEXT",
     "ALTER TABLE movies ADD COLUMN title_zh TEXT",
+    "ALTER TABLE movies ADD COLUMN synopsis_zh TEXT",
 ]
 
 
