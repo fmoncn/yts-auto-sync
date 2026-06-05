@@ -635,31 +635,24 @@
 
             <!-- ── 本地列表视图 ── -->
             <template v-else>
-            <!-- 搜索 + 排序 -->
-            <div class="filter-row" style="display:flex;gap:0.5rem;margin-bottom:0.625rem;flex-shrink:0;align-items:center;padding:0 0.875rem;">
-                <div class="search-wrap">
-                    <i class="ph ph-magnifying-glass"></i>
-                    <input v-model="searchQ" class="search-input" placeholder="搜索标题 / 年份 / 类型…">
-                </div>
-                <select v-model="sortBy" style="padding:0.5rem 0.625rem;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t2);font-size:13px;outline:none;flex-shrink:0;">
-                    <option value="pub_date">上映时间↓</option>
-                    <option value="added">入库时间↓</option>
+            <!-- 画质 + 评分 + 排序 -->
+            <div style="display:flex;gap:5px;flex-shrink:0;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:0 0.875rem 2px;margin-bottom:0.5rem;align-items:center;">
+                <button @click="qualityFilter=''"     class="ftab" :class="qualityFilter===''     ?'ftab-on':'ftab-off'">全部</button>
+                <button @click="qualityFilter='2160p'" class="ftab" :class="qualityFilter==='2160p'?'ftab-on':'ftab-off'">4K</button>
+                <button @click="qualityFilter='1080p'" class="ftab" :class="qualityFilter==='1080p'?'ftab-on':'ftab-off'">1080p</button>
+                <button @click="qualityFilter='720p'"  class="ftab" :class="qualityFilter==='720p' ?'ftab-on':'ftab-off'">720p</button>
+                <div style="width:1px;height:16px;background:var(--b3);flex-shrink:0;margin:0 2px;"></div>
+                <span style="font-size:11px;color:var(--t4);flex-shrink:0;white-space:nowrap;">评分 ≥</span>
+                <input type="number" v-model.number="minRating" min="0" max="10" step="0.5"
+                       style="width:44px;padding:4px 6px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t2);font-size:13px;outline:none;text-align:center;flex-shrink:0;"
+                       title="最低评分">
+                <div style="width:1px;height:16px;background:var(--b3);flex-shrink:0;margin:0 2px;"></div>
+                <select v-model="sortBy" style="padding:4px 6px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t2);font-size:12px;outline:none;flex-shrink:0;">
+                    <option value="pub_date">上映↓</option>
+                    <option value="added">入库↓</option>
                     <option value="rating">评分↓</option>
                     <option value="size">大小↓</option>
                 </select>
-                <select v-model="qualityFilter" style="padding:0.5rem 0.5rem;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t2);font-size:13px;outline:none;flex-shrink:0;">
-                    <option value="">全画质</option>
-                    <option value="2160p">2160p</option>
-                    <option value="1080p">1080p</option>
-                    <option value="720p">720p</option>
-                </select>
-                <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
-                    <span style="font-size:11px;color:var(--t4);white-space:nowrap;">≥</span>
-                    <input type="number" v-model.number="minRating" min="0" max="10" step="0.5"
-                           style="width:46px;padding:0.5rem 0.375rem;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t2);font-size:13px;outline:none;text-align:center;"
-                           title="最低评分">
-                    <span style="font-size:11px;color:var(--t4);">★</span>
-                </div>
             </div>
             <!-- 状态过滤 -->
             <div style="display:flex;gap:5px;margin-bottom:0.75rem;flex-shrink:0;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:0 0.875rem 2px;">
@@ -724,8 +717,8 @@
                     </div>
                     <div v-if="filteredMovies.length===0" style="text-align:center;padding:3rem 1rem;color:var(--t4);border:1px dashed var(--b3);border-radius:1rem;">
                         <i class="ph ph-magnifying-glass" style="font-size:2.5rem;display:block;margin-bottom:0.75rem;"></i>
-                        <p style="font-size:14px;margin:0 0 4px;">{{ searchQ ? '无匹配结果' : '无影片' }}</p>
-                        <p style="font-size:12px;color:var(--t4);margin:0;">{{ searchQ ? '换个关键词试试' : '点"刷新 RSS"立即抓取' }}</p>
+                        <p style="font-size:14px;margin:0 0 4px;">无影片</p>
+                        <p style="font-size:12px;color:var(--t4);margin:0;">点"刷新 RSS"立即抓取</p>
                     </div>
                 </div>
             </div>
@@ -919,7 +912,6 @@ createApp({
         const refreshing = ref(false);
         const activeId = ref(null);
         const filter = ref('all');
-        const searchQ = ref('');
         const sortBy = ref('pub_date');
         const minRating = ref(6.5);
         const qualityFilter = ref('2160p');
@@ -966,15 +958,6 @@ createApp({
             // Rating filter
             if (minRating.value > 0) {
                 list = list.filter(m => !m.rating || m.rating >= minRating.value);
-            }
-            // Search
-            if (searchQ.value.trim()) {
-                const q = searchQ.value.toLowerCase();
-                list = list.filter(m =>
-                    shortTitle(m.title).toLowerCase().includes(q) ||
-                    String(m.year || '').includes(q) ||
-                    (m.genres || '').toLowerCase().includes(q)
-                );
             }
             // Sort
             if (sortBy.value === 'pub_date') list = [...list].sort((a,b) => { const y=(b.year||0)-(a.year||0); return y!==0?y:(b.rss_pub_at||0)-(a.rss_pub_at||0); });
@@ -1281,7 +1264,7 @@ createApp({
             connected, refreshing, refreshRss, downloadMovie, refetchSubtitle, translateSubtitle, translateAll, removeMovie,
             activeId, activeMovie, selectMovie, switchToDetail, closeDetail,
             filter, filters, counts, filteredMovies, stats,
-            searchQ, sortBy, minRating, qualityFilter, switches,
+            sortBy, minRating, qualityFilter, switches,
             autoScroll, logBox, rightTab, mobTab, unreadLogs,
             toastMsg, configSaving, patchConfig, doBackup, showTransKey,
             shortTitle, fmtSize, fmtSpeed, fmtEta, formatInterval,
