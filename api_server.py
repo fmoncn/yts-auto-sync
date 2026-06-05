@@ -445,16 +445,19 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
     try:
         srt = await subtitle_fetcher.fetch_for_video(video_path, imdb_id, on_progress=_progress)
         if srt:
-            # .zh.srt -> ready Chinese; .en.srt -> English only, awaiting manual translation
             is_zh = srt.name.lower().endswith(".zh.srt")
             status = "zh" if is_zh else "en_only"
             update_movie(imdb_id, subtitle_status=status, subtitle_path=str(srt))
             log_event("info", f"subtitle [{status}]: {srt.name}", imdb_id)
             rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": status})
+            if not is_zh and settings.TRANS_ENABLED:
+                asyncio.create_task(_do_translate(imdb_id, video_path))
         else:
             update_movie(imdb_id, subtitle_status="no_subtitle")
             log_event("warn", "no subtitle found (embedded + subdl all missed)", imdb_id)
             rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
+            if settings.TRANS_ENABLED:
+                asyncio.create_task(_do_translate(imdb_id, video_path))
     except Exception as e:
         update_movie(imdb_id, subtitle_status="error", note=str(e))
         log_event("error", f"subtitle: {repr(e)}", imdb_id)
