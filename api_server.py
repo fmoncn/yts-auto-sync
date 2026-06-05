@@ -325,7 +325,12 @@ def _fetch_chinese_title_sync(title: str, year: Optional[int], imdb_id: str) -> 
     model = getattr(settings, "TRANS_MODEL", "deepseek-v4-flash")
     if not base_url:
         return None
-    prompt = f"电影《{title}》({year})的官方简体中文译名？只回复片名，无则音译，不要书名号和年份。"
+    clean_title = _re.sub(r"\s*\[.*", "", _re.sub(r"\s*\(\d{4}\).*", "", title)).strip()
+    prompt = (
+        f"电影《{clean_title}》({year})的简体中文片名是什么？"
+        f"有官方译名就用官方译名，没有就用汉字音译。"
+        f"只输出中文片名，不要英文、不要书名号、不要年份、不要解释。"
+    )
     try:
         r = httpx.post(
             f"{base_url}/chat/completions",
@@ -335,13 +340,12 @@ def _fetch_chinese_title_sync(title: str, year: Optional[int], imdb_id: str) -> 
         )
         r.raise_for_status()
         raw = r.json()["choices"][0]["message"]["content"].strip()
-        # Clean: remove 《》, trailing year, explanation lines
         raw = raw.strip("《》").split("\n")[0].strip()
         raw = _re.sub(r"\s*[（(]\d{4}[)）].*$", "", raw).strip()
         raw = _re.sub(r"^.*(?:译名|片名)[为是：:]+\s*", "", raw).strip()
-        raw = raw.strip("《》").strip()
-        # Reject if result is too long or still English-only
-        if raw and len(raw) <= 30 and not _re.fullmatch(r"[A-Za-z0-9 ,.!?'\-:]+", raw):
+        raw = raw.strip("《》\"'""''").strip()
+        # Accept if contains at least one CJK character and is not too long
+        if raw and len(raw) <= 30 and _re.search(r'[一-鿿㐀-䶿]', raw):
             return raw
     except Exception as e:
         log_event("warn", f"zh title lookup failed for {title}: {repr(e)}", imdb_id)
@@ -692,6 +696,14 @@ async def _do_translate(imdb_id: str, video_path: Path) -> None:
         update_movie(imdb_id, subtitle_status="en_only", note=str(e))
         log_event("error", f"translate: {repr(e)}", imdb_id)
         rss_watcher._publish({"type": "sub.error", "imdb_id": imdb_id, "error": str(e)})
+
+
+@app.post("/api/enrich/titles", dependencies=[_auth])
+async def api_enrich_titles():
+    """Re-fetch title_zh for all movies missing it."""
+    targets = [m for m in list_movies() if not m.get("title_zh") and m.get("title")]
+    _bg(_enrich_missing_metadata())
+    return {"ok": True, "queued": len(targets)}
 
 
 @app.post("/api/movies/translate_all", dependencies=[_auth])
