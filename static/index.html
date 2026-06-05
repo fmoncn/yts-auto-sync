@@ -672,7 +672,10 @@
                         </div>
                         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
                             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
-                                <h3 style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0;">{{ shortTitle(m.title) }}</h3>
+                                <div style="min-width:0;flex:1;">
+                                    <h3 style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0;">{{ m.title_zh || shortTitle(m.title) }}</h3>
+                                    <div v-if="m.title_zh" style="font-size:11px;color:var(--t4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">{{ shortTitle(m.title) }}</div>
+                                </div>
                                 <span v-if="!['discovered','skipped'].includes(m.status)" class="pill flex-shrink-0" :class="sPill(m.status)" style="flex-shrink:0;">{{ sLabel(m.status) }}</span>
                             </div>
                             <div style="display:flex;flex-wrap:wrap;gap:6px 12px;font-size:11px;font-family:monospace;color:var(--t4);">
@@ -764,7 +767,8 @@
                             <i v-else class="ph ph-film-slate" style="font-size:2rem;color:var(--s4);"></i>
                         </div>
                         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
-                            <h3 style="font-size:14px;font-weight:600;color:var(--t1);line-height:1.35;margin:0;">{{ shortTitle(activeMovie.title) }}</h3>
+                            <h3 style="font-size:14px;font-weight:600;color:var(--t1);line-height:1.35;margin:0;">{{ activeMovie.title_zh || shortTitle(activeMovie.title) }}</h3>
+                            <div v-if="activeMovie.title_zh" style="font-size:11px;color:var(--t4);margin-top:1px;">{{ shortTitle(activeMovie.title) }}</div>
                             <p style="font-size:11px;color:var(--t4);margin:0;">{{ activeMovie.year }}{{ activeMovie.quality ? ' · ' + activeMovie.quality : '' }}{{ activeMovie.size_bytes ? ' · ' + fmtSize(activeMovie.size_bytes) : '' }}</p>
                             <div style="display:flex;flex-wrap:wrap;gap:4px;">
                                 <span class="pill" :class="sPill(activeMovie.status)">{{ sLabel(activeMovie.status) }}</span>
