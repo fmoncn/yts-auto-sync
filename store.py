@@ -80,6 +80,16 @@ for _sql in _MIGRATIONS:
     except sqlite3.OperationalError:
         pass  # column already exists
 
+# Normalise legacy subtitle_status values
+for _sql in [
+    "UPDATE movies SET subtitle_status='no_subtitle' WHERE subtitle_status='missing'",
+    "UPDATE movies SET subtitle_status='zh'       WHERE subtitle_status='found' AND subtitle_path NOT LIKE '%.en.srt'",
+    "UPDATE movies SET subtitle_status='en_only'  WHERE subtitle_status='found' AND subtitle_path LIKE '%.en.srt'",
+    "UPDATE movies SET subtitle_status='no_subtitle' WHERE subtitle_status='found'",
+]:
+    _conn.execute(_sql)
+_conn.commit()
+
 
 @contextmanager
 def tx():

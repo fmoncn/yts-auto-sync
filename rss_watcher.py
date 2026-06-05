@@ -26,6 +26,13 @@ _YEAR_RE = re.compile(r"\((\d{4})\)")
 _QUALITY_RE = re.compile(r"\b(720p|1080p|2160p|3D)\b", re.I)
 
 _subscribers: list[asyncio.Queue] = []
+_background_tasks: set[asyncio.Task] = set()
+
+import json as _json
+try:
+    _download_rules: dict = _json.loads(getattr(__import__('config').settings, 'AUTO_DOWNLOAD_RULES', '{}'))
+except Exception:
+    _download_rules: dict = {}
 
 
 def subscribe() -> asyncio.Queue:
@@ -180,7 +187,6 @@ async def _enrich_from_yts_api(movie: dict) -> None:
             clean = re.sub(r"\s*\[.*", "", clean).strip()
             params["query_term"] = (f"{clean} {movie['year']}" if movie.get("year") else clean)
             params["limit"] = 1
-            params["limit"] = 1
 
         endpoint = (
             f"{settings.YTS_API_URL}/movie_details.json"
@@ -252,19 +258,13 @@ def _find_active_duplicate(m: dict):
 def _should_auto_download(m: dict) -> tuple[bool, str]:
     if not settings.AUTO_DOWNLOAD:
         return False, "auto disabled"
-        
+
     if settings.MAX_SIZE_GB and m.get("size_bytes"):
         gb = m["size_bytes"] / (1024**3)
         if gb > settings.MAX_SIZE_GB:
             return False, f"size {gb:.1f}G > {settings.MAX_SIZE_GB}G"
-            
-    # Load scoring rules
-    try:
-        import json
-        rules = json.loads(getattr(settings, "AUTO_DOWNLOAD_RULES", "{}"))
-    except Exception:
-        rules = {}
-        
+
+    rules = _download_rules
     genre_rules = rules.get("genres_bonus", {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20})
     min_auto_score = rules.get("min_auto_score", 80)
     min_review_score = rules.get("min_review_score", 60)
@@ -338,7 +338,9 @@ async def poll_once() -> dict:
                 _publish({"type": "movie.new", "movie": m})
                 log_event("info", f"new RSS item: {m['title']}", m["imdb_id"])
                 # Enrich metadata from YTS API asynchronously
-                asyncio.create_task(_enrich_from_yts_api(m))
+                task = asyncio.create_task(_enrich_from_yts_api(m))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
                 dup = _find_active_duplicate(m)
                 if dup:
                     note = f"duplicate: {dup['quality']} already {dup['status']}"

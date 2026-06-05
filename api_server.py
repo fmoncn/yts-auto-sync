@@ -35,6 +35,15 @@ _stop_event: Optional[asyncio.Event] = None
 _watcher_task: Optional[asyncio.Task] = None
 _progress_task: Optional[asyncio.Task] = None
 _backup_task: Optional[asyncio.Task] = None
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _bg(coro) -> asyncio.Task:
+    """Create a task and pin it against GC until done."""
+    t = asyncio.create_task(coro)
+    _background_tasks.add(t)
+    t.add_done_callback(_background_tasks.discard)
+    return t
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -73,19 +82,31 @@ async def lifespan(app: FastAPI):
     _watcher_task = asyncio.create_task(rss_watcher.run_watcher(_stop_event))
     _progress_task = asyncio.create_task(_progress_loop(_stop_event))
     _backup_task = asyncio.create_task(_backup_loop(_stop_event))
-    asyncio.create_task(_enrich_missing_metadata())
-    
+    _bg(_enrich_missing_metadata())
+
     # Recover stuck subtitles
-    stuck_movies = list_movies()
     recovered = 0
-    for m in stuck_movies:
+    for m in list_movies():
         if m.get("subtitle_status") in ("searching", "translating"):
             update_movie(m["imdb_id"], subtitle_status="pending")
             if m.get("final_video"):
-                asyncio.create_task(_fetch_sub(m["imdb_id"], Path(m["final_video"])))
+                _bg(_fetch_sub(m["imdb_id"], Path(m["final_video"])))
             recovered += 1
-    if recovered > 0:
+    if recovered:
         log_event("info", f"recovered {recovered} stuck subtitle tasks")
+
+    # Auto-translate existing en_only movies on startup
+    if settings.TRANS_ENABLED:
+        pending_trans = [
+            m for m in list_movies()
+            if m.get("status") == "done"
+            and m.get("subtitle_status") == "en_only"
+            and m.get("final_video")
+        ]
+        for m in pending_trans:
+            _bg(_do_translate(m["imdb_id"], Path(m["final_video"])))
+        if pending_trans:
+            log_event("info", f"startup: queued {len(pending_trans)} en_only translations")
         
     log_event("info", f"yts-auto-sync started on :{settings.YTS_PORT}")
     yield
@@ -158,7 +179,7 @@ async def _progress_loop(stop: asyncio.Event) -> None:
                     update_movie(m["imdb_id"], status="done")
                     log_event("info", f"download done: {m['title']}", m["imdb_id"])
                     rss_watcher._publish({"type": "movie.done", "imdb_id": m["imdb_id"]})
-                    asyncio.create_task(_post_complete(m, t))
+                    _bg(_post_complete(m, t))
 
             # Clean up ghost downloading/seeding tasks that are no longer in qBit
             current_hashes = {t["hash"].lower() for t in torrents if t and "hash" in t}
@@ -283,8 +304,9 @@ def _fetch_chinese_title_sync(title: str, year: Optional[int], imdb_id: str) -> 
 
 
 def _clean_library_dirname(title: str, year: Optional[int], title_zh: Optional[str] = None) -> str:
-    if settings.PINYIN_NAMES:
-        return _title_initials(title, year)
+    if title_zh:
+        name = f"{title_zh} ({year})" if year else title_zh
+        return _BAD_NAME_RE.sub(" ", name).strip() or "Unknown"
     name = re.sub(r"\s*\[[^\]]*\]\s*", " ", title or "").strip()
     if year and f"({year})" not in name:
         name = f"{name} ({year})"
@@ -386,8 +408,8 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
     content = settings.host_path(raw)
     new_video: Optional[Path] = None
     if settings.AUTO_ORGANIZE:
-        # Fetch Chinese title before organizing (for Pinyin naming)
-        if settings.PINYIN_NAMES and not movie.get("title_zh"):
+        # Fetch Chinese title for folder naming (used when title_zh available)
+        if not movie.get("title_zh"):
             zh = await asyncio.to_thread(
                 _fetch_chinese_title_sync, movie["title"], movie.get("year"), movie["imdb_id"]
             )
@@ -409,7 +431,7 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
         await _fetch_sub(movie["imdb_id"], new_video)
 
     if settings.CLOUD_UPLOAD_ENABLED and new_video:
-        asyncio.create_task(_upload_movie(movie["imdb_id"], new_video.parent))
+        _bg(_upload_movie(movie["imdb_id"], new_video.parent))
 
     if settings.DELETE_QBIT_AFTER_ORGANIZE and movie.get("qbit_hash"):
         # Safety: only delete files from qBit if organize actually succeeded.
@@ -451,13 +473,13 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
             log_event("info", f"subtitle [{status}]: {srt.name}", imdb_id)
             rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": status})
             if not is_zh and settings.TRANS_ENABLED:
-                asyncio.create_task(_do_translate(imdb_id, video_path))
+                _bg(_do_translate(imdb_id, video_path))
         else:
             update_movie(imdb_id, subtitle_status="no_subtitle")
             log_event("warn", "no subtitle found (embedded + subdl all missed)", imdb_id)
             rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
             if settings.TRANS_ENABLED:
-                asyncio.create_task(_do_translate(imdb_id, video_path))
+                _bg(_do_translate(imdb_id, video_path))
     except Exception as e:
         update_movie(imdb_id, subtitle_status="error", note=str(e))
         log_event("error", f"subtitle: {repr(e)}", imdb_id)
@@ -589,7 +611,7 @@ async def api_resub(imdb_id: str):
     m = get_movie(imdb_id)
     if not m or not m.get("final_video"):
         raise HTTPException(404, "no downloaded video")
-    asyncio.create_task(_fetch_sub(imdb_id, Path(m["final_video"])))
+    _bg(_fetch_sub(imdb_id, Path(m["final_video"])))
     return {"ok": True}
 
 
@@ -599,7 +621,7 @@ async def api_translate(imdb_id: str):
     m = get_movie(imdb_id)
     if not m or not m.get("final_video"):
         raise HTTPException(404, "no downloaded video")
-    asyncio.create_task(_do_translate(imdb_id, Path(m["final_video"])))
+    _bg(_do_translate(imdb_id, Path(m["final_video"])))
     return {"ok": True}
 
 
@@ -616,7 +638,7 @@ async def _do_translate(imdb_id: str, video_path: Path) -> None:
             update_movie(imdb_id, subtitle_status="zh", subtitle_path=str(srt))
             log_event("info", f"subtitle translated: {srt.name}", imdb_id)
             rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": "zh"})
-            asyncio.create_task(notifier.notify("翻译完成", srt.name))
+            _bg(notifier.notify("翻译完成", srt.name))
         else:
             update_movie(imdb_id, subtitle_status="en_only")
             log_event("warn", "translate: no result, keeping en_only", imdb_id)
@@ -625,6 +647,20 @@ async def _do_translate(imdb_id: str, video_path: Path) -> None:
         update_movie(imdb_id, subtitle_status="en_only", note=str(e))
         log_event("error", f"translate: {repr(e)}", imdb_id)
         rss_watcher._publish({"type": "sub.error", "imdb_id": imdb_id, "error": str(e)})
+
+
+@app.post("/api/movies/translate_all", dependencies=[_auth])
+async def api_translate_all():
+    """Trigger AI translation for all done movies with en_only subtitle."""
+    targets = [
+        m for m in list_movies()
+        if m.get("status") == "done"
+        and m.get("subtitle_status") == "en_only"
+        and m.get("final_video")
+    ]
+    for m in targets:
+        _bg(_do_translate(m["imdb_id"], Path(m["final_video"])))
+    return {"ok": True, "queued": len(targets)}
 
 
 @app.post("/api/movies/{imdb_id}/organize", dependencies=[_auth])
@@ -649,7 +685,7 @@ async def api_organize(imdb_id: str):
                 t = {"content_path": content, "save_path": content}
             else:
                 raise HTTPException(404, "torrent gone from qBit and no fallback path")
-    asyncio.create_task(_post_complete(m, t))
+    _bg(_post_complete(m, t))
     return {"ok": True}
 
 
@@ -704,7 +740,7 @@ async def api_config():
         "trans_enabled": settings.TRANS_ENABLED,
         "trans_model": settings.TRANS_MODEL,
         "trans_base_url": settings.TRANS_BASE_URL,
-        "trans_api_key": settings.TRANS_API_KEY,
+        "trans_api_key": "***" if settings.TRANS_API_KEY else "",
         "trans_batch_size": settings.TRANS_BATCH_SIZE,
         "tracker_count": len(trackers),
         "auth_enabled": bool(settings.API_TOKEN),
@@ -778,7 +814,7 @@ async def api_disk():
     _shutil = shutil
     paths = {
         "library": settings.LIBRARY_DIR,
-        "downloads": settings.QBIT_SAVE_PATH.replace("/downloads/movies", "/mnt/extdata/movies"),
+        "downloads": settings.host_path(settings.QBIT_SAVE_PATH),
         "data": str(settings.data_dir),
     }
     result = {}

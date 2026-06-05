@@ -175,6 +175,9 @@
             input:not([type=range]):not([type=checkbox]),select,textarea{font-size:16px!important;}
             /* ensure scroll content clears fixed bottom nav on iOS */
             .scroll-y{padding-bottom:calc(64px + env(safe-area-inset-bottom));}
+            /* filter row: search full-width first, controls wrap below */
+            .filter-row{flex-wrap:wrap;}
+            .filter-row .search-wrap{flex-basis:100%;width:100%;}
         }
 
         /* ── Mobile header ─────────────────────────────── */
@@ -561,6 +564,9 @@
                         <button @click="doBackup" class="btn btn-sm btn-slate tap-scale" style="flex:1;">
                             <i class="ph ph-database"></i> 备份 DB
                         </button>
+                        <button v-if="config.trans_enabled" @click="translateAll" class="btn btn-sm btn-green tap-scale" style="flex:1 0 100%;">
+                            <i class="ph ph-magic-wand"></i> 翻译全部英文字幕
+                        </button>
                     </div>
                 </div>
             </div>
@@ -630,7 +636,7 @@
             <!-- ── 本地列表视图 ── -->
             <template v-else>
             <!-- 搜索 + 排序 -->
-            <div style="display:flex;gap:0.5rem;margin-bottom:0.625rem;flex-shrink:0;align-items:center;padding:0 0.875rem;">
+            <div class="filter-row" style="display:flex;gap:0.5rem;margin-bottom:0.625rem;flex-shrink:0;align-items:center;padding:0 0.875rem;">
                 <div class="search-wrap">
                     <i class="ph ph-magnifying-glass"></i>
                     <input v-model="searchQ" class="search-input" placeholder="搜索标题 / 年份 / 类型…">
@@ -1161,6 +1167,12 @@ createApp({
                 toast('备份完成: '+j.file);
             } catch(e) { toast('备份失败'); }
         }
+        async function translateAll() {
+            try {
+                const j = await fetch('/api/movies/translate_all',{method:'POST'}).then(r=>r.json());
+                toast(j.queued ? `已加入翻译队列：${j.queued} 部` : '没有待翻译的影片');
+            } catch(e) { toast('翻译请求失败'); }
+        }
 
         function upsertMovie(m) {
             const i = movies.value.findIndex(x=>x.imdb_id===m.imdb_id);
@@ -1224,14 +1236,14 @@ createApp({
             });
             es.addEventListener('sub.found', e => {
                 const d = JSON.parse(e.data);
-                updateMovieField(d.imdb_id, {subtitle_status:d.kind||'found',subtitle_path:d.path});
+                updateMovieField(d.imdb_id, {subtitle_status:d.kind||'zh',subtitle_path:d.path});
                 const m = movies.value.find(x => x.imdb_id === d.imdb_id);
                 const t = m ? shortTitle(m.title) : d.imdb_id;
-                pushLog('info', d.kind==='en_only' ? `英文字幕就位(待手翻) → ${t}` : `中文字幕完成 ✓ → ${t}`);
+                pushLog('info', d.kind==='en_only' ? `英文字幕就位 → ${t}` : `中文字幕完成 ✓ → ${t}`);
             });
             es.addEventListener('sub.missing', e => {
                 const d = JSON.parse(e.data);
-                updateMovieField(d.imdb_id, {subtitle_status:'missing'});
+                updateMovieField(d.imdb_id, {subtitle_status:'no_subtitle'});
                 const m = movies.value.find(x => x.imdb_id === d.imdb_id);
                 const t = m ? shortTitle(m.title) : d.imdb_id;
                 pushLog('warn', `字幕缺失 → ${t}`);
@@ -1266,7 +1278,7 @@ createApp({
 
         return {
             theme, toggleTheme, movies, live, logs, config, qbit, disk,
-            connected, refreshing, refreshRss, downloadMovie, refetchSubtitle, translateSubtitle, removeMovie,
+            connected, refreshing, refreshRss, downloadMovie, refetchSubtitle, translateSubtitle, translateAll, removeMovie,
             activeId, activeMovie, selectMovie, switchToDetail, closeDetail,
             filter, filters, counts, filteredMovies, stats,
             searchQ, sortBy, minRating, qualityFilter, switches,

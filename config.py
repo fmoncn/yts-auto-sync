@@ -8,12 +8,12 @@ class Settings(BaseSettings):
     YTS_HOST: str = "0.0.0.0"
     YTS_PORT: int = 4003
 
-    YTS_RSS_URL: str = "https://yts.mx/rss/0/{quality}/all/6/en"
+    YTS_RSS_URL: str = "https://yts.bz/rss/0/{quality}/all/6/en"
     YTS_QUALITIES: str = "2160p"
     YTS_POLL_INTERVAL: int = 600
     YTS_RSS_PROXY: str = ""
     YTS_API_PROXY: str = "http://127.0.0.1:20171"
-    YTS_API_URL: str = "https://yts.mx/api/v2"
+    YTS_API_URL: str = "https://yts.bz/api/v2"
 
     QBIT_URL: str = "http://127.0.0.1:8080"
     QBIT_USER: str = "admin"
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     AUTO_ORGANIZE: bool = True
     DELETE_QBIT_AFTER_ORGANIZE: bool = True
     CONVERT_TO_MP4: bool = True   # fast remux MKV→MP4 after download
-    PINYIN_NAMES: bool = True     # use Pinyin for folder/file names
+    PINYIN_NAMES: bool = False    # deprecated: use title_zh for folder names when available
     QBIT_PATH_MAP: str = "/downloads/movies:/mnt/extdata/movies;/downloads/incomplete:/mnt/extdata/torrents/incomplete"
 
     API_TOKEN: str = ""
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     NOTIFY_TELEGRAM_CHAT_ID: str = ""
     DISK_MIN_GB: float = 5.0
     DB_BACKUP_KEEP_DAYS: int = 7
-    LIBRARY_KEEP_DAYS: int = 30
+    LIBRARY_KEEP_DAYS: int = 0   # 0 = never auto-delete library
 
     def host_path(self, container_path: str) -> str:
         if not container_path:
