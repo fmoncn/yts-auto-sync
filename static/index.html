@@ -949,6 +949,15 @@ createApp({
             return c;
         });
 
+        function qualityScore(m) {
+            const t = (m.title || '').toLowerCase();
+            const q = (m.quality || '').toLowerCase();
+            if (q.includes('2160') || t.includes('2160')) return 3;
+            if ((q.includes('1080') || t.includes('1080')) && t.includes('x265')) return 2;
+            if (q.includes('1080') || t.includes('1080')) return 1;
+            return 0;
+        }
+
         const filteredMovies = computed(() => {
             let list = filter.value === 'all' ? movies.value.filter(m => m.status !== 'done') : movies.value.filter(m => m.status === filter.value);
             // Quality filter
@@ -964,7 +973,14 @@ createApp({
             else if (sortBy.value === 'rating') list = [...list].sort((a,b) => (b.rating||0)-(a.rating||0));
             else if (sortBy.value === 'size') list = [...list].sort((a,b) => (b.size_bytes||0)-(a.size_bytes||0));
             else list = [...list].sort((a,b) => (b.added_at||0)-(a.added_at||0));
-            return list;
+            // Deduplicate: one entry per title+year, best quality wins
+            const best = new Map();
+            for (const m of list) {
+                const key = shortTitle(m.title).toLowerCase() + '|' + (m.year || '');
+                const prev = best.get(key);
+                if (!prev || qualityScore(m) > qualityScore(prev)) best.set(key, m);
+            }
+            return list.filter(m => best.get(shortTitle(m.title).toLowerCase() + '|' + (m.year || '')) === m);
         });
 
         const activeMovie = computed(() =>
