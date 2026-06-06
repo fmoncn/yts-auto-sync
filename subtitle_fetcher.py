@@ -47,12 +47,21 @@ async def fetch_for_video(
         return extracted
 
     # L3: external English download via subdl (no translation)
+    # Skip if MKV already has embedded Chinese streams (even unextractable PGS format)
     if settings.SUBDL_API_KEY:
-        if on_progress:
-            on_progress("外部下载英文字幕")
-        downloaded = await _download_subdl_en(video_path, imdb_id)
-        if downloaded:
-            return downloaded
+        skip_subdl = False
+        if video_path.suffix.lower() in (".mkv", ".mp4", ".m4v"):
+            streams = await asyncio.to_thread(_ffprobe_subs, video_path)
+            # Skip subdl if ANY subtitle stream exists — prefer embedded over external
+            skip_subdl = len(streams) > 0
+        if skip_subdl:
+            log_event("info", "subtitle: embedded subtitle stream found, skipping subdl", imdb_id)
+        else:
+            if on_progress:
+                on_progress("外部下载英文字幕")
+            downloaded = await _download_subdl_en(video_path, imdb_id)
+            if downloaded:
+                return downloaded
 
     return None
 
@@ -389,6 +398,74 @@ async def translate_en_to_zh(
         zh_texts = results.get(i, [c[2] for c in batch])
         for (idx, timing, _), zh in zip(batch, zh_texts):
             out_captions.append((idx, timing, zh))
+
+    # ── Review pass: use stronger model to proofread the full translation ──
+    review_model = getattr(settings, "TRANS_REVIEW_MODEL", "")
+    review_batch_size = getattr(settings, "TRANS_REVIEW_BATCH", 80)
+    if review_model and review_model != model:
+        log_event("info", f"subtitle: review pass with {review_model} ({len(out_captions)} lines)", imdb_id)
+        if on_progress:
+            on_progress(f"校审中 · {review_model}")
+
+        # Pair original EN with translated ZH for review context
+        paired = list(zip(captions, out_captions))  # ((idx,timing,en), (idx,timing,zh))
+        review_chunks = [paired[i:i+review_batch_size] for i in range(0, len(paired), review_batch_size)]
+        reviewed: dict[int, list[str]] = {}
+
+        async def _review_chunk(client: httpx.AsyncClient, chunk_idx: int, chunk: list) -> None:
+            en_lines = [c[0][2] for c in chunk]
+            zh_lines = [c[1][2] for c in chunk]
+            payload = "\n".join(
+                f"{i+1}. EN: {en}\n   ZH: {zh}"
+                for i, (en, zh) in enumerate(zip(en_lines, zh_lines))
+            )
+            async with sem:
+                for attempt in range(3):
+                    try:
+                        if attempt:
+                            await asyncio.sleep(2 ** attempt)
+                        resp = await client.post(
+                            f"{base_url}/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}"},
+                            json={
+                                "model": review_model,
+                                "messages": [
+                                    {"role": "system", "content": "你是专业电影字幕校审员。只输出 JSON 数组。"},
+                                    {"role": "user", "content": (
+                                        "以下是电影字幕英文原文和初译中文，请逐行校审改善译文。\n"
+                                        "要求：纠正错译、统一术语、简洁口语化、符合字幕长度。\n"
+                                        "只返回 JSON 字符串数组，行数与输入相同，不要序号不要解释。\n\n"
+                                        f"{payload}"
+                                    )},
+                                ],
+                            },
+                            timeout=120.0,
+                        )
+                        resp.raise_for_status()
+                        content = resp.json()["choices"][0]["message"]["content"]
+                        m = re.search(r"\[.*\]", content, re.DOTALL)
+                        parsed = json.loads(m.group(0) if m else content)
+                        if isinstance(parsed, list) and len(parsed) == len(zh_lines):
+                            reviewed[chunk_idx] = [str(r).strip() or orig for r, orig in zip(parsed, zh_lines)]
+                            return
+                        raise ValueError(f"count mismatch: {len(parsed)} vs {len(zh_lines)}")
+                    except Exception as e:
+                        if attempt == 2:
+                            log_event("warn", f"subtitle: review chunk {chunk_idx} failed: {repr(e)}", imdb_id)
+                            reviewed[chunk_idx] = zh_lines
+
+        async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            review_tasks = [_review_chunk(client, i, chunk) for i, chunk in enumerate(review_chunks)]
+            for coro in asyncio.as_completed(review_tasks):
+                await coro
+
+        # Merge reviewed lines back into out_captions
+        out_captions = []
+        for i, chunk in enumerate(review_chunks):
+            improved = reviewed.get(i, [c[1][2] for c in chunk])
+            for (orig_cap, _), zh in zip(chunk, improved):
+                out_captions.append((orig_cap[0], orig_cap[1], zh))
+        log_event("info", f"subtitle: review complete ({len(out_captions)} lines)", imdb_id)
 
     out_path = en_srt.with_name(f"{video_path.stem}.zh.srt")
     _write_srt(out_path, out_captions)

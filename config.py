@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     TRANS_BASE_URL: str = "http://YOUR_LLM_HOST:8317/v1"
     TRANS_API_KEY: str = "cliproxy-local"
     TRANS_MODEL: str = "deepseek-v4-flash"
+    TRANS_REVIEW_MODEL: str = "deepseek-v4-flash"  # review pass after bulk translation
+    TRANS_REVIEW_BATCH: int = 80                 # lines per review chunk
     TRANS_BATCH_SIZE: int = 20
     TRANS_CONCURRENT: int = 4
     TRANS_PROXY: str = ""

@@ -96,7 +96,7 @@
             }
             #app-main{
                 display:grid;
-                grid-template-columns:280px 1fr 360px;
+                grid-template-columns:2.5fr 4.5fr 3fr;
                 gap:1rem;flex:1;overflow:hidden;
             }
             .desk-panel{display:flex!important;flex-direction:column;height:100%;overflow:hidden;}
@@ -392,71 +392,75 @@
                 </span>
             </div>
             <div class="scroll-y" style="flex:1;padding-right:2px;">
-                <div style="display:flex;flex-direction:column;gap:1rem;">
+                <div style="display:flex;flex-direction:column;gap:0.75rem;">
 
-                    <!-- 画质标签 -->
-                    <div>
-                        <div style="font-size:11px;color:var(--t4);margin-bottom:6px;">画质筛选</div>
-                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">
-                            <div v-for="q in ['720p','1080p','2160p']" :key="q"
-                                 style="text-align:center;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid;"
-                                 :style="config.qualities?.includes(q) ? 'background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.4);color:#a5b4fc' : 'background:rgba(30,41,59,.5);border-color:var(--b3);color:var(--t4)'">
-                                {{ q }}
+                    <!-- ① 下载策略 -->
+                    <div style="background:rgba(15,23,42,.5);border:1px solid var(--b3);border-radius:12px;padding:12px;">
+                        <div style="font-size:11px;font-weight:600;color:var(--t3);display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+                            <i class="ph ph-download-simple" style="color:#a5b4fc;font-size:13px;"></i> 下载策略
+                        </div>
+                        <!-- 画质 pills -->
+                        <div style="margin-bottom:10px;">
+                            <div style="font-size:10px;color:var(--t4);margin-bottom:5px;">画质筛选</div>
+                            <div style="display:flex;gap:6px;">
+                                <div v-for="q in ['720p','1080p','2160p']" :key="q"
+                                     style="flex:1;text-align:center;font-size:12px;padding:5px 0;border-radius:8px;border:1px solid;"
+                                     :style="config.qualities?.includes(q) ? 'background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.4);color:#a5b4fc' : 'background:rgba(30,41,59,.5);border-color:var(--b3);color:var(--t4)'">
+                                    {{ q }}
+                                </div>
+                            </div>
+                            <p style="font-size:10px;color:var(--t5,var(--t4));margin:4px 0 0;">通过 .env 修改 YTS_QUALITIES</p>
+                        </div>
+                        <!-- 评分 + 体积 -->
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+                            <div>
+                                <label style="font-size:10px;color:var(--t4);display:block;margin-bottom:4px;">最低评分</label>
+                                <input type="number" min="0" max="10" step="0.5" :value="config.min_rating"
+                                       @change="patchConfig('min_rating', +$event.target.value)"
+                                       style="width:100%;padding:6px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:14px;outline:none;box-sizing:border-box;">
+                            </div>
+                            <div>
+                                <label style="font-size:10px;color:var(--t4);display:block;margin-bottom:4px;">最大体积 GB</label>
+                                <input type="number" min="1" max="100" step="1" :value="config.max_size_gb"
+                                       @change="patchConfig('max_size_gb', +$event.target.value)"
+                                       style="width:100%;padding:6px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:14px;outline:none;box-sizing:border-box;">
                             </div>
                         </div>
-                        <p style="font-size:10px;color:var(--t4);margin-top:4px;">通过 .env 修改 YTS_QUALITIES</p>
-                    </div>
-
-                    <!-- 评分 + 体积 -->
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
-                        <div>
-                            <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">最低评分</label>
-                            <input type="number" min="0" max="10" step="0.5" :value="config.min_rating"
-                                   @change="patchConfig('min_rating', +$event.target.value)"
-                                   style="width:100%;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:14px;outline:none;">
-                        </div>
-                        <div>
-                            <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">最大体积 GB</label>
-                            <input type="number" min="1" max="100" step="1" :value="config.max_size_gb"
-                                   @change="patchConfig('max_size_gb', +$event.target.value)"
-                                   style="width:100%;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:14px;outline:none;">
-                        </div>
-                    </div>
-
-                    <!-- 开关组 -->
-                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.125rem;">
-                        <div v-for="sw in switches" :key="sw.key"
-                             style="display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--b3);">
-                            <span style="font-size:13px;color:var(--t2);">{{ sw.label }}</span>
-                            <label class="toggle">
-                                <input type="checkbox" :checked="config[sw.key]" @change="patchConfig(sw.key, $event.target.checked)">
-                                <span class="toggle-t"></span>
-                            </label>
-                        </div>
-                        <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 0;">
-                            <span style="font-size:13px;color:var(--t2);">轮询间隔</span>
-                            <span style="font-size:12px;font-family:monospace;color:var(--t4);">{{ formatInterval(config.poll_interval) }}</span>
-                        </div>
-                    </div>
-
-                    <!-- 字幕 & 翻译 -->
-                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;">
-                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--t4);margin-bottom:8px;display:flex;align-items:center;gap:5px;">
-                            <i class="ph ph-subtitles"></i> 字幕 &amp; 翻译
-                        </div>
-                        <!-- 自动字幕 / AI翻译 开关 -->
+                        <!-- 开关组 -->
                         <div style="display:flex;flex-direction:column;gap:0;">
-                            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b3);">
+                            <div v-for="sw in switches" :key="sw.key"
+                                 style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b3);">
+                                <span style="font-size:13px;color:var(--t2);">{{ sw.label }}</span>
+                                <label class="toggle">
+                                    <input type="checkbox" :checked="config[sw.key]" @change="patchConfig(sw.key, $event.target.checked)">
+                                    <span class="toggle-t"></span>
+                                </label>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+                                <span style="font-size:13px;color:var(--t2);">轮询间隔</span>
+                                <span style="font-size:12px;font-family:monospace;color:var(--t4);">{{ formatInterval(config.poll_interval) }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ② 字幕 & 翻译 -->
+                    <div style="background:rgba(15,23,42,.5);border:1px solid var(--b3);border-radius:12px;padding:12px;">
+                        <div style="font-size:11px;font-weight:600;color:var(--t3);display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+                            <i class="ph ph-subtitles" style="color:#a5b4fc;font-size:13px;"></i> 字幕 &amp; 翻译
+                        </div>
+                        <!-- 开关 -->
+                        <div style="display:flex;flex-direction:column;gap:0;">
+                            <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--b3);">
                                 <span style="font-size:13px;color:var(--t2);">自动字幕</span>
                                 <label class="toggle">
                                     <input type="checkbox" :checked="config.auto_subtitle" @change="patchConfig('auto_subtitle', $event.target.checked)">
                                     <span class="toggle-t"></span>
                                 </label>
                             </div>
-                            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b3);">
+                            <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;">
                                 <div>
                                     <span style="font-size:13px;color:var(--t2);">AI 翻译</span>
-                                    <span style="font-size:10px;color:var(--t4);margin-left:6px;">无中文时自动翻译英文</span>
+                                    <span style="font-size:10px;color:var(--t4);margin-left:6px;">无中文时自动翻译</span>
                                 </div>
                                 <label class="toggle">
                                     <input type="checkbox" :checked="config.trans_enabled" @change="patchConfig('trans_enabled', $event.target.checked)">
@@ -464,99 +468,100 @@
                                 </label>
                             </div>
                         </div>
-                        <!-- 翻译模型 & 批次大小 -->
-                        <div style="display:grid;grid-template-columns:1fr auto;gap:0.625rem;margin-top:0.625rem;align-items:end;">
-                            <div>
-                                <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">翻译模型</label>
-                                <input type="text" :value="config.trans_model"
-                                       @change="patchConfig('trans_model', $event.target.value)"
-                                       placeholder="gpt-5.4-mini"
-                                       style="width:100%;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:13px;outline:none;">
+                        <!-- 翻译模型 + 批次 -->
+                        <div style="margin-top:10px;border-top:1px solid var(--b3);padding-top:10px;">
+                            <div style="font-size:10px;color:var(--t4);margin-bottom:6px;display:flex;align-items:center;gap:4px;">
+                                <i class="ph ph-brain" style="color:#818cf8;"></i> 翻译模型
                             </div>
-                            <div>
-                                <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">批次</label>
-                                <input type="number" min="5" max="100" step="5" :value="config.trans_batch_size"
-                                       @change="patchConfig('trans_batch_size', +$event.target.value)"
-                                       style="width:68px;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:13px;outline:none;">
-                            </div>
-                        </div>
-                        <!-- API 端点 -->
-                        <div style="margin-top:0.625rem;">
-                            <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">API 端点</label>
-                            <input type="text" :value="config.trans_base_url"
-                                   @change="patchConfig('trans_base_url', $event.target.value)"
-                                   placeholder="http://127.0.0.1:8317/v1"
-                                   style="width:100%;padding:7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:12px;outline:none;">
-                        </div>
-                        <!-- API Key -->
-                        <div style="margin-top:0.625rem;">
-                            <label style="font-size:11px;color:var(--t4);display:block;margin-bottom:4px;">API Key</label>
-                            <div style="position:relative;">
-                                <input :type="showTransKey ? 'text' : 'password'" :value="config.trans_api_key"
-                                       @change="patchConfig('trans_api_key', $event.target.value)"
-                                       placeholder="sk-..."
-                                       style="width:100%;padding:7px 36px 7px 10px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:12px;outline:none;box-sizing:border-box;">
-                                <button @click="showTransKey=!showTransKey" type="button"
-                                        style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t4);cursor:pointer;padding:0;display:flex;align-items:center;">
-                                    <i class="ph" :class="showTransKey ? 'ph-eye-slash' : 'ph-eye'" style="font-size:14px;"></i>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+                                <button v-for="m in ['qoder/ultimate','deepseek-v4-flash']" :key="m"
+                                        @click="patchConfig('trans_model', m)"
+                                        :style="config.trans_model===m
+                                            ? 'background:rgba(99,102,241,.2);color:#a5b4fc;border-color:rgba(99,102,241,.5);'
+                                            : 'background:var(--s3);color:var(--t4);border-color:var(--b2);'"
+                                        style="padding:5px 12px;border-radius:20px;border:1px solid;font-size:11px;font-family:monospace;cursor:pointer;white-space:nowrap;transition:all .15s;line-height:1.4;">
+                                    {{ m }}
                                 </button>
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- 状态行 -->
-                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.5rem;">
-                        <div style="display:flex;align-items:center;justify-content:space-between;">
-                            <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-broadcast" style="color:#a5b4fc;"></i> Tracker 池</span>
-                            <span style="font-size:12px;font-family:monospace;color:#a5b4fc;">{{ config.tracker_count || 0 }} 个</span>
-                        </div>
-                        <div style="display:flex;align-items:center;justify-content:space-between;">
-                            <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;">
-                                <i class="ph ph-cloud-arrow-down" :style="qbit.ok ? 'color:#34d399' : 'color:#f87171'"></i> qBittorrent
-                            </span>
-                            <span style="font-size:12px;font-family:monospace;" :style="qbit.ok ? 'color:#6ee7b7' : 'color:#fca5a5'">
-                                {{ qbit.ok ? qbit.version : 'down' }}
-                            </span>
-                        </div>
-                        <div style="display:flex;align-items:center;justify-content:space-between;">
-                            <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-lock"></i> 认证</span>
-                            <span class="pill" :class="config.auth_enabled ? 'p-green' : 'p-slate'">{{ config.auth_enabled ? '已启用' : '关闭' }}</span>
-                        </div>
-                        <div style="display:flex;align-items:center;justify-content:space-between;">
-                            <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-paper-plane-tilt"></i> Telegram</span>
-                            <span class="pill" :class="config.telegram_enabled ? 'p-green' : 'p-slate'">{{ config.telegram_enabled ? '已启用' : '关闭' }}</span>
-                        </div>
-                    </div>
-
-                    <!-- 统计 -->
-                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;">
-                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--t4);margin-bottom:6px;">统计</div>
-                        <div v-for="s in stats" :key="s.label" style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                            <span style="font-size:12px;color:var(--t4);">{{ s.label }}</span>
-                            <span style="font-size:12px;font-family:monospace;" :style="'color:'+s.color">{{ s.value }}</span>
-                        </div>
-                    </div>
-
-                    <!-- 磁盘 -->
-                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;">
-                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--t4);margin-bottom:8px;display:flex;align-items:center;gap:5px;">
-                            <i class="ph ph-hard-drive"></i> 磁盘
-                        </div>
-                        <div v-for="(d, name) in disk.disks" :key="name" style="margin-bottom:10px;">
-                            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                                <span style="font-size:11px;color:var(--t4);">{{ name }}</span>
-                                <span style="font-size:11px;font-family:monospace;" :style="(d.free_gb||999) < 5 ? 'color:#fca5a5' : 'color:var(--t4)'">
-                                    {{ d.error ? '不可用' : d.free_gb + 'G 可用' }}
+                            <div style="font-size:10px;color:var(--t4);margin-bottom:6px;display:flex;align-items:center;gap:4px;">
+                                <i class="ph ph-magnifying-glass" style="color:#818cf8;"></i> 校审模型
+                            </div>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+                                <button v-for="m in ['qoder/ultimate','deepseek-v4-flash']" :key="m"
+                                        @click="patchConfig('trans_review_model', m)"
+                                        :style="config.trans_review_model===m
+                                            ? 'background:rgba(99,102,241,.2);color:#a5b4fc;border-color:rgba(99,102,241,.5);'
+                                            : 'background:var(--s3);color:var(--t4);border-color:var(--b2);'"
+                                        style="padding:5px 12px;border-radius:20px;border:1px solid;font-size:11px;font-family:monospace;cursor:pointer;white-space:nowrap;transition:all .15s;line-height:1.4;">
+                                    {{ m }}
+                                </button>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;">
+                                <span style="font-size:10px;color:var(--t4);display:flex;align-items:center;gap:4px;">
+                                    <i class="ph ph-stack" style="color:#818cf8;"></i> 批次大小
                                 </span>
-                            </div>
-                            <div v-if="!d.error" class="dbar">
-                                <div class="dfill" :style="{ width: d.pct+'%', background: d.pct>90?'#ef4444':d.pct>75?'#f59e0b':'#6366f1' }"></div>
+                                <input type="number" min="5" max="100" step="5" :value="config.trans_batch_size"
+                                       @change="patchConfig('trans_batch_size', +$event.target.value)"
+                                       style="width:68px;padding:5px 8px;border-radius:8px;background:var(--s3);border:1px solid var(--b2);color:var(--t1);font-family:monospace;font-size:13px;outline:none;text-align:center;">
                             </div>
                         </div>
                     </div>
 
-                    <!-- 操作按钮 -->
-                    <div style="border-top:1px solid var(--b3);padding-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+                    <!-- ③ 系统状态 -->
+                    <div style="background:rgba(15,23,42,.5);border:1px solid var(--b3);border-radius:12px;padding:12px;">
+                        <div style="font-size:11px;font-weight:600;color:var(--t3);display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+                            <i class="ph ph-activity" style="color:#34d399;font-size:13px;"></i> 系统状态
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:7px;">
+                            <div style="display:flex;align-items:center;justify-content:space-between;">
+                                <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-cloud-arrow-down" :style="qbit.ok?'color:#34d399':'color:#f87171'"></i> qBittorrent</span>
+                                <span style="font-size:12px;font-family:monospace;" :style="qbit.ok?'color:#6ee7b7':'color:#fca5a5'">{{ qbit.ok ? qbit.version : 'down' }}</span>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;">
+                                <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-broadcast" style="color:#a5b4fc;"></i> Tracker 池</span>
+                                <span style="font-size:12px;font-family:monospace;color:#a5b4fc;">{{ config.tracker_count || 0 }} 个</span>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;">
+                                <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-lock" style="color:#94a3b8;"></i> 认证</span>
+                                <span class="pill" :class="config.auth_enabled ? 'p-green' : 'p-slate'">{{ config.auth_enabled ? '已启用' : '关闭' }}</span>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;">
+                                <span style="font-size:12px;color:var(--t3);display:flex;align-items:center;gap:5px;"><i class="ph ph-paper-plane-tilt" style="color:#94a3b8;"></i> Telegram</span>
+                                <span class="pill" :class="config.telegram_enabled ? 'p-green' : 'p-slate'">{{ config.telegram_enabled ? '已启用' : '关闭' }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ④ 统计 & 磁盘 -->
+                    <div style="background:rgba(15,23,42,.5);border:1px solid var(--b3);border-radius:12px;padding:12px;">
+                        <div style="font-size:11px;font-weight:600;color:var(--t3);display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+                            <i class="ph ph-chart-bar" style="color:#a5b4fc;font-size:13px;"></i> 统计 &amp; 磁盘
+                        </div>
+                        <!-- 统计 -->
+                        <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">
+                            <div v-for="s in stats" :key="s.label" style="display:flex;justify-content:space-between;align-items:center;">
+                                <span style="font-size:12px;color:var(--t4);">{{ s.label }}</span>
+                                <span style="font-size:12px;font-family:monospace;" :style="'color:'+s.color">{{ s.value }}</span>
+                            </div>
+                        </div>
+                        <!-- 磁盘 -->
+                        <div style="border-top:1px solid var(--b3);padding-top:10px;display:flex;flex-direction:column;gap:8px;">
+                            <div v-for="(d, name) in disk.disks" :key="name">
+                                <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                                    <span style="font-size:11px;color:var(--t4);display:flex;align-items:center;gap:4px;"><i class="ph ph-hard-drive" style="font-size:11px;"></i> {{ name }}</span>
+                                    <span style="font-size:11px;font-family:monospace;" :style="(d.free_gb||999) < 5 ? 'color:#fca5a5' : 'color:var(--t4)'">
+                                        {{ d.error ? '不可用' : d.free_gb + 'G 可用' }}
+                                    </span>
+                                </div>
+                                <div v-if="!d.error" class="dbar">
+                                    <div class="dfill" :style="{ width: d.pct+'%', background: d.pct>90?'#ef4444':d.pct>75?'#f59e0b':'#6366f1' }"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ⑤ 操作 -->
+                    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;padding-bottom:0.5rem;">
                         <button @click="refreshRss" :disabled="refreshing" class="btn btn-sm btn-indigo tap-scale" style="flex:1;">
                             <i class="ph" :class="refreshing?'ph-spinner-gap':'ph-arrows-clockwise'" :style="refreshing?'animation:spin .8s linear infinite':''"></i>
                             刷新 RSS
@@ -568,6 +573,7 @@
                             <i class="ph ph-magic-wand"></i> 翻译全部英文字幕
                         </button>
                     </div>
+
                 </div>
             </div>
         </section>
@@ -963,8 +969,9 @@ createApp({
 
         const filteredMovies = computed(() => {
             let list = filter.value === 'all' ? movies.value.filter(m => m.status !== 'done') : movies.value.filter(m => m.status === filter.value);
-            // Quality filter
-            if (qualityFilter.value) {
+            // Quality filter — skip for downloading/done tabs (show all regardless of quality)
+            const skipQualityFilter = filter.value === 'downloading' || filter.value === 'done';
+            if (qualityFilter.value && !skipQualityFilter) {
                 list = list.filter(m => !m.quality || m.quality.toLowerCase().includes(qualityFilter.value.toLowerCase()));
             }
             // Rating filter

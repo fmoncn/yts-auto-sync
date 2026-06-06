@@ -796,6 +796,7 @@ async def api_config():
         "sub_langs": settings.sub_langs,
         "trans_enabled": settings.TRANS_ENABLED,
         "trans_model": settings.TRANS_MODEL,
+        "trans_review_model": settings.TRANS_REVIEW_MODEL,
         "trans_base_url": settings.TRANS_BASE_URL,
         "trans_api_key": "***" if settings.TRANS_API_KEY else "",
         "trans_batch_size": settings.TRANS_BATCH_SIZE,
@@ -814,6 +815,7 @@ class ConfigPatch(BaseModel):
     poll_interval: Optional[int] = None
     trans_enabled: Optional[bool] = None
     trans_model: Optional[str] = None
+    trans_review_model: Optional[str] = None
     trans_base_url: Optional[str] = None
     trans_api_key: Optional[str] = None
     trans_batch_size: Optional[int] = None
@@ -836,6 +838,7 @@ async def api_patch_config(patch: ConfigPatch):
         "poll_interval": "YTS_POLL_INTERVAL",
         "trans_enabled": "TRANS_ENABLED",
         "trans_model": "TRANS_MODEL",
+        "trans_review_model": "TRANS_REVIEW_MODEL",
         "trans_base_url": "TRANS_BASE_URL",
         "trans_api_key": "TRANS_API_KEY",
         "trans_batch_size": "TRANS_BATCH_SIZE",
