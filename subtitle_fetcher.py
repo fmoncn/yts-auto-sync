@@ -46,8 +46,19 @@ async def fetch_for_video(
     if extracted:
         return extracted
 
+    # L2.5: bundled English .srt packaged with the torrent (e.g. YTS packs)
+    # If a plain .srt with the same stem exists and is not Chinese, treat as English
+    plain_srt = video_path.parent / f"{video_path.stem}.srt"
+    if plain_srt.exists() and not _CHS_KEYWORDS.search(plain_srt.stem.lower()):
+        en_srt = video_path.parent / f"{video_path.stem}.en.srt"
+        if not en_srt.exists():
+            import shutil as _shutil
+            _shutil.copy2(str(plain_srt), str(en_srt))
+            log_event("info", f"subtitle: bundled .srt promoted to .en.srt for translation", imdb_id)
+        return en_srt
+
     # L3: external English download via subdl (no translation)
-    # Skip if MKV already has embedded Chinese streams (even unextractable PGS format)
+    # Skip if MKV already has embedded subtitle streams (even unextractable PGS format)
     if settings.SUBDL_API_KEY:
         skip_subdl = False
         if video_path.suffix.lower() in (".mkv", ".mp4", ".m4v"):
@@ -316,13 +327,17 @@ async def translate_en_to_zh(
     import json
     import httpx
 
-    en_srt = video_path.with_suffix("").with_suffix("").parent / f"{video_path.stem}.en.srt"
-    # Also accept video_path itself as directory hint
+    en_srt = video_path.parent / f"{video_path.stem}.en.srt"
     if not en_srt.exists():
-        en_srt = video_path.parent / f"{video_path.stem}.en.srt"
-    if not en_srt.exists():
-        log_event("warn", "subtitle: no .en.srt found to translate", imdb_id)
-        return None
+        # Fallback: plain .srt bundled with the torrent (same stem, not Chinese)
+        plain = video_path.parent / f"{video_path.stem}.srt"
+        if plain.exists() and not _CHS_KEYWORDS.search(plain.stem.lower()):
+            import shutil as _shutil
+            _shutil.copy2(str(plain), str(en_srt))
+            log_event("info", "subtitle: promoted bundled .srt to .en.srt for translation", imdb_id)
+        else:
+            log_event("warn", "subtitle: no .en.srt found to translate", imdb_id)
+            return None
 
     captions = _parse_srt(en_srt)
     if not captions:
