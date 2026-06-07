@@ -5,7 +5,8 @@ Waterfall:
   L1  embedded CHS/CHT in MKV                   -> extract <stem>.zh.srt (zh)
   L2  embedded English in MKV                   -> extract <stem>.en.srt (en, for manual translation)
   L3  external English via subdl (proxied)      -> <stem>.en.srt (en)
-  L4  nothing                                   -> None (caller marks no_subtitle)
+  L4  external English via OpenSubtitles        -> <stem>.en.srt (en)
+  L5  nothing                                   -> None (caller marks no_subtitle)
 
 The caller (api_server._fetch_sub) infers status from the returned filename:
   *.zh.srt -> "zh", *.en.srt -> "en_only", None -> "no_subtitle".
@@ -69,10 +70,18 @@ async def fetch_for_video(
             log_event("info", "subtitle: embedded subtitle stream found, skipping subdl", imdb_id)
         else:
             if on_progress:
-                on_progress("外部下载英文字幕")
+                on_progress("subdl 下载英文字幕")
             downloaded = await _download_subdl_en(video_path, imdb_id)
             if downloaded:
                 return downloaded
+
+    # L4: OpenSubtitles fallback
+    if settings.OPENSUBTITLES_API_KEY:
+        if on_progress:
+            on_progress("OpenSubtitles 下载英文字幕")
+        downloaded = await _download_opensubtitles_en(video_path, imdb_id)
+        if downloaded:
+            return downloaded
 
     return None
 
@@ -290,6 +299,119 @@ async def _download_subdl_en(video_path: Path, imdb_id: str) -> Optional[Path]:
                 return out
     except Exception as e:
         log_event("warn", f"subtitle: subdl fetch failed: {repr(e)}", imdb_id)
+    return None
+
+
+# ────────────────────────────────────────────────────────────────
+# External English subtitle via opensubtitles.com REST API
+# ────────────────────────────────────────────────────────────────
+_os_token: Optional[str] = None
+_os_token_expiry: float = 0.0
+
+
+async def _opensubtitles_login(client: "httpx.AsyncClient") -> Optional[str]:
+    global _os_token, _os_token_expiry
+    import time
+    if _os_token and time.time() < _os_token_expiry:
+        return _os_token
+    if not (settings.OPENSUBTITLES_USERNAME and settings.OPENSUBTITLES_PASSWORD):
+        return None
+    try:
+        r = await client.post(
+            "https://api.opensubtitles.com/api/v1/login",
+            headers={"Api-Key": settings.OPENSUBTITLES_API_KEY, "Content-Type": "application/json"},
+            json={"username": settings.OPENSUBTITLES_USERNAME, "password": settings.OPENSUBTITLES_PASSWORD},
+        )
+        r.raise_for_status()
+        data = r.json()
+        _os_token = data.get("token")
+        _os_token_expiry = time.time() + 23 * 3600  # tokens valid 24h
+        return _os_token
+    except Exception as e:
+        log_event("warn", f"subtitle: opensubtitles login failed: {repr(e)}")
+        return None
+
+
+async def _download_opensubtitles_en(video_path: Path, imdb_id: str) -> Optional[Path]:
+    """Fetch an English subtitle from opensubtitles.com and save as <stem>.en.srt."""
+    import httpx
+
+    movie = get_movie(imdb_id) or {}
+    film_name = _clean_title(movie.get("title", ""))
+    year = movie.get("year")
+    if not film_name:
+        return None
+
+    proxy = settings.SUB_PROXY or None
+    headers = {
+        "Api-Key": settings.OPENSUBTITLES_API_KEY,
+        "Content-Type": "application/json",
+        "User-Agent": "yts-auto-sync v1.0",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=proxy, follow_redirects=True, headers=headers) as cli:
+            token = await _opensubtitles_login(cli)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                cli.headers.update({"Authorization": f"Bearer {token}"})
+
+            params: dict = {"languages": "en", "type": "movie", "order_by": "download_count"}
+            # Prefer IMDB ID lookup for accuracy
+            real_imdb = (movie.get("imdb_url") or "").rstrip("/").rsplit("/", 1)[-1]
+            if real_imdb and real_imdb.startswith("tt"):
+                params["imdb_id"] = real_imdb.lstrip("tt")
+            else:
+                params["query"] = film_name
+                if year:
+                    params["year"] = year
+
+            r = await cli.get("https://api.opensubtitles.com/api/v1/subtitles", params=params)
+            r.raise_for_status()
+            data = r.json()
+            results = (data.get("data") or [])
+            if not results:
+                log_event("info", f"subtitle: opensubtitles no EN result for '{film_name}'", imdb_id)
+                return None
+
+            if not token:
+                log_event("info", f"subtitle: opensubtitles skipping download (no auth token)", imdb_id)
+                return None
+
+            for item in results[:5]:
+                attrs = item.get("attributes", {})
+                files = attrs.get("files") or []
+                if not files:
+                    continue
+                file_id = files[0].get("file_id")
+                if not file_id:
+                    continue
+
+                dr = await cli.post(
+                    "https://api.opensubtitles.com/api/v1/download",
+                    json={"file_id": file_id, "sub_format": "srt"},
+                )
+                dr.raise_for_status()
+                dl_data = dr.json()
+                link = dl_data.get("link")
+                if not link:
+                    continue
+
+                sr = await cli.get(link)
+                if sr.status_code != 200:
+                    continue
+                text = sr.content.decode("utf-8", errors="replace")
+                if not text.strip():
+                    continue
+
+                out = video_path.parent / f"{video_path.stem}.en.srt"
+                out.write_text(text, encoding="utf-8")
+                release = attrs.get("release") or ""
+                log_event("info", f"subtitle: opensubtitles EN downloaded ({release})", imdb_id)
+                return out
+
+    except Exception as e:
+        log_event("warn", f"subtitle: opensubtitles fetch failed: {repr(e)}", imdb_id)
     return None
 
 

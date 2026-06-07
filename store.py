@@ -155,6 +155,8 @@ def list_movies(status: Optional[str] = None, limit: int = 500) -> list[dict]:
     if status:
         q += " WHERE status=?"
         args = (status,)
+    else:
+        q += " WHERE status != 'excluded'"
     q += " ORDER BY added_at DESC LIMIT ?"
     args += (limit,)
     with _lock:

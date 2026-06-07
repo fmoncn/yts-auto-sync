@@ -756,7 +756,9 @@ def api_delete(imdb_id: str, delete_files: bool = False):
             qbit_client.remove_torrent(m["qbit_hash"], delete_files=delete_files)
         except Exception as e:
             log_event("warn", f"qBit remove: {repr(e)}", imdb_id)
-    delete_movie(imdb_id)
+    update_movie(imdb_id, status="excluded", qbit_hash=None, save_path=None,
+                 final_video=None, subtitle_path=None)
+    log_event("info", f"excluded {m.get('title', imdb_id)}", imdb_id)
     return {"ok": True}
 
 
