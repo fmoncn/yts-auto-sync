@@ -478,6 +478,9 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
 
     if settings.AUTO_SUBTITLE and new_video:
         await _fetch_sub(movie["imdb_id"], new_video)
+        current = get_movie(movie["imdb_id"])
+        if current and current.get("status") == "no_subtitle":
+            return
 
     if settings.CLOUD_UPLOAD_ENABLED and new_video:
         _bg(_upload_movie(movie["imdb_id"], new_video.parent))
@@ -524,11 +527,17 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
             if not is_zh and settings.TRANS_ENABLED:
                 _bg(_do_translate(imdb_id, video_path))
         else:
-            update_movie(imdb_id, subtitle_status="no_subtitle")
-            log_event("warn", "no subtitle found (embedded + subdl all missed)", imdb_id)
+            update_movie(imdb_id, subtitle_status="no_subtitle", status="no_subtitle", final_video=None)
+            log_event("warn", "no subtitle found — deleting library file, will retry when subtitles available", imdb_id)
             rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
-            if settings.TRANS_ENABLED:
-                _bg(_do_translate(imdb_id, video_path))
+            try:
+                if video_path.exists():
+                    video_path.unlink()
+                folder = video_path.parent
+                if folder.exists() and not any(folder.iterdir()):
+                    folder.rmdir()
+            except Exception as _e:
+                log_event("warn", f"subtitle: cleanup failed: {repr(_e)}", imdb_id)
     except Exception as e:
         update_movie(imdb_id, subtitle_status="error", note=str(e))
         log_event("error", f"subtitle: {repr(e)}", imdb_id)
