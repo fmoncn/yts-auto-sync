@@ -249,6 +249,8 @@ async def _progress_loop(stop: asyncio.Event) -> None:
 async def _cleanup_old_movies() -> None:
     """Delete local files for movies older than LIBRARY_KEEP_DAYS days."""
     keep_days = getattr(settings, "LIBRARY_KEEP_DAYS", 30)
+    if keep_days <= 0:
+        return  # 0 = never auto-delete
     cutoff = int(time.time()) - keep_days * 86400
     removed = 0
     for m in list_movies(limit=500):
