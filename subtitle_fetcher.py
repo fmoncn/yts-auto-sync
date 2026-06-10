@@ -5,7 +5,8 @@ Waterfall:
   L1  embedded CHS/CHT in MKV                   -> extract <stem>.zh.srt (zh)
   L2  embedded English in MKV                   -> extract <stem>.en.srt (en, for manual translation)
   L3  external English via subdl (proxied)      -> <stem>.en.srt (en)
-  L4  nothing                                   -> None (caller marks no_subtitle)
+  L4  external English via OpenSubtitles        -> <stem>.en.srt (en)
+  L5  nothing                                   -> None (caller marks no_subtitle)
 
 The caller (api_server._fetch_sub) infers status from the returned filename:
   *.zh.srt -> "zh", *.en.srt -> "en_only", None -> "no_subtitle".
@@ -47,32 +48,40 @@ async def fetch_for_video(
         return extracted
 
     # L2.5: bundled English .srt packaged with the torrent (e.g. YTS packs)
-    # If a plain .srt with the same stem exists and is not Chinese, treat as English
+    # Verify the file is likely English by sampling its content — YTS packs with
+    # multi-language subs may have non-English files with a plain-stem name.
     plain_srt = video_path.parent / f"{video_path.stem}.srt"
-    if plain_srt.exists() and not _CHS_KEYWORDS.search(plain_srt.stem.lower()):
+    if plain_srt.exists() and _is_likely_english_srt(plain_srt):
         en_srt = video_path.parent / f"{video_path.stem}.en.srt"
         if not en_srt.exists():
             import shutil as _shutil
             _shutil.copy2(str(plain_srt), str(en_srt))
-            log_event("info", f"subtitle: bundled .srt promoted to .en.srt for translation", imdb_id)
+            log_event("info", "subtitle: bundled .srt promoted to .en.srt for translation", imdb_id)
         return en_srt
 
     # L3: external English download via subdl (no translation)
-    # Skip if MKV already has embedded subtitle streams (even unextractable PGS format)
+    # Skip ONLY if there are extractable text subtitle streams (not PGS/image-only streams)
     if settings.SUBDL_API_KEY:
         skip_subdl = False
         if video_path.suffix.lower() in (".mkv", ".mp4", ".m4v"):
             streams = await asyncio.to_thread(_ffprobe_subs, video_path)
-            # Skip subdl if ANY subtitle stream exists — prefer embedded over external
-            skip_subdl = len(streams) > 0
+            skip_subdl = _has_extractable_text_subs(streams)
         if skip_subdl:
-            log_event("info", "subtitle: embedded subtitle stream found, skipping subdl", imdb_id)
+            log_event("info", "subtitle: extractable text stream found, skipping subdl", imdb_id)
         else:
             if on_progress:
-                on_progress("外部下载英文字幕")
+                on_progress("subdl 下载英文字幕")
             downloaded = await _download_subdl_en(video_path, imdb_id)
             if downloaded:
                 return downloaded
+
+    # L4: OpenSubtitles fallback
+    if settings.OPENSUBTITLES_API_KEY:
+        if on_progress:
+            on_progress("OpenSubtitles 下载英文字幕")
+        downloaded = await _download_opensubtitles_en(video_path, imdb_id)
+        if downloaded:
+            return downloaded
 
     return None
 
@@ -146,6 +155,31 @@ def _ffprobe_subs(video_path: Path) -> list[dict]:
         return _json.loads(r.stdout).get("streams", [])
     except Exception:
         return []
+
+
+def _is_likely_english_srt(path: Path, sample_lines: int = 30) -> bool:
+    """Sample up to sample_lines of text from an SRT and check it looks like English."""
+    try:
+        text = path.read_bytes()[:8000].decode("utf-8", errors="ignore")
+    except Exception:
+        return False
+    # Reject if Chinese/CJK characters present
+    if re.search(r"[一-鿿぀-ヿ가-힯]", text):
+        return False
+    # Must have at least some ASCII words
+    words = re.findall(r"[a-zA-Z]{3,}", text)
+    return len(words) >= 5
+
+
+# Image-based subtitle codecs that ffmpeg cannot convert to SRT
+_IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvdsub", "dvb_subtitle"}
+
+def _has_extractable_text_subs(streams: list[dict]) -> bool:
+    """Return True if any stream is a text-based subtitle extractable to SRT."""
+    return any(
+        s.get("codec_name", "").lower() not in _IMAGE_SUB_CODECS
+        for s in streams
+    )
 
 
 def _ffmpeg_extract(video_path: Path, stream_idx: int, out_path: Path) -> bool:
@@ -294,6 +328,119 @@ async def _download_subdl_en(video_path: Path, imdb_id: str) -> Optional[Path]:
 
 
 # ────────────────────────────────────────────────────────────────
+# External English subtitle via opensubtitles.com REST API
+# ────────────────────────────────────────────────────────────────
+_os_token: Optional[str] = None
+_os_token_expiry: float = 0.0
+
+
+async def _opensubtitles_login(client: "httpx.AsyncClient") -> Optional[str]:
+    global _os_token, _os_token_expiry
+    import time
+    if _os_token and time.time() < _os_token_expiry:
+        return _os_token
+    if not (settings.OPENSUBTITLES_USERNAME and settings.OPENSUBTITLES_PASSWORD):
+        return None
+    try:
+        r = await client.post(
+            "https://api.opensubtitles.com/api/v1/login",
+            headers={"Api-Key": settings.OPENSUBTITLES_API_KEY, "Content-Type": "application/json"},
+            json={"username": settings.OPENSUBTITLES_USERNAME, "password": settings.OPENSUBTITLES_PASSWORD},
+        )
+        r.raise_for_status()
+        data = r.json()
+        _os_token = data.get("token")
+        _os_token_expiry = time.time() + 23 * 3600  # tokens valid 24h
+        return _os_token
+    except Exception as e:
+        log_event("warn", f"subtitle: opensubtitles login failed: {repr(e)}")
+        return None
+
+
+async def _download_opensubtitles_en(video_path: Path, imdb_id: str) -> Optional[Path]:
+    """Fetch an English subtitle from opensubtitles.com and save as <stem>.en.srt."""
+    import httpx
+
+    movie = get_movie(imdb_id) or {}
+    film_name = _clean_title(movie.get("title", ""))
+    year = movie.get("year")
+    if not film_name:
+        return None
+
+    proxy = settings.SUB_PROXY or None
+    headers = {
+        "Api-Key": settings.OPENSUBTITLES_API_KEY,
+        "Content-Type": "application/json",
+        "User-Agent": "yts-auto-sync v1.0",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=proxy, follow_redirects=True, headers=headers) as cli:
+            token = await _opensubtitles_login(cli)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                cli.headers.update({"Authorization": f"Bearer {token}"})
+
+            params: dict = {"languages": "en", "type": "movie", "order_by": "download_count"}
+            # Prefer IMDB ID lookup for accuracy
+            real_imdb = (movie.get("imdb_url") or "").rstrip("/").rsplit("/", 1)[-1]
+            if real_imdb and real_imdb.startswith("tt"):
+                params["imdb_id"] = real_imdb.lstrip("tt")
+            else:
+                params["query"] = film_name
+                if year:
+                    params["year"] = year
+
+            r = await cli.get("https://api.opensubtitles.com/api/v1/subtitles", params=params)
+            r.raise_for_status()
+            data = r.json()
+            results = (data.get("data") or [])
+            if not results:
+                log_event("info", f"subtitle: opensubtitles no EN result for '{film_name}'", imdb_id)
+                return None
+
+            if not token:
+                log_event("info", f"subtitle: opensubtitles skipping download (no auth token)", imdb_id)
+                return None
+
+            for item in results[:5]:
+                attrs = item.get("attributes", {})
+                files = attrs.get("files") or []
+                if not files:
+                    continue
+                file_id = files[0].get("file_id")
+                if not file_id:
+                    continue
+
+                dr = await cli.post(
+                    "https://api.opensubtitles.com/api/v1/download",
+                    json={"file_id": file_id, "sub_format": "srt"},
+                )
+                dr.raise_for_status()
+                dl_data = dr.json()
+                link = dl_data.get("link")
+                if not link:
+                    continue
+
+                sr = await cli.get(link)
+                if sr.status_code != 200:
+                    continue
+                text = sr.content.decode("utf-8", errors="replace")
+                if not text.strip():
+                    continue
+
+                out = video_path.parent / f"{video_path.stem}.en.srt"
+                out.write_text(text, encoding="utf-8")
+                release = attrs.get("release") or ""
+                log_event("info", f"subtitle: opensubtitles EN downloaded ({release})", imdb_id)
+                return out
+
+    except Exception as e:
+        log_event("warn", f"subtitle: opensubtitles fetch failed: {repr(e)}", imdb_id)
+    return None
+
+
+# ────────────────────────────────────────────────────────────────
 # On-demand AI translation: .en.srt -> .zh.srt  (HTTP, concurrent)
 # ────────────────────────────────────────────────────────────────
 def _parse_srt(path: Path) -> list[tuple[str, str, str]]:
@@ -329,9 +476,9 @@ async def translate_en_to_zh(
 
     en_srt = video_path.parent / f"{video_path.stem}.en.srt"
     if not en_srt.exists():
-        # Fallback: plain .srt bundled with the torrent (same stem, not Chinese)
+        # Fallback: plain .srt bundled with the torrent (same stem, verified English)
         plain = video_path.parent / f"{video_path.stem}.srt"
-        if plain.exists() and not _CHS_KEYWORDS.search(plain.stem.lower()):
+        if plain.exists() and _is_likely_english_srt(plain):
             import shutil as _shutil
             _shutil.copy2(str(plain), str(en_srt))
             log_event("info", "subtitle: promoted bundled .srt to .en.srt for translation", imdb_id)

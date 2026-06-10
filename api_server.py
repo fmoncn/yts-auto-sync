@@ -249,16 +249,25 @@ async def _progress_loop(stop: asyncio.Event) -> None:
 async def _cleanup_old_movies() -> None:
     """Delete local files for movies older than LIBRARY_KEEP_DAYS days."""
     keep_days = getattr(settings, "LIBRARY_KEEP_DAYS", 30)
+    if keep_days <= 0:
+        return  # 0 = never auto-delete
     cutoff = int(time.time()) - keep_days * 86400
+    lib_root = Path(settings.LIBRARY_DIR).resolve()
     removed = 0
     for m in list_movies(limit=500):
-        if m.get("added_at", 0) > cutoff:
+        if (m.get("added_at") or 0) > cutoff:
             continue
         video = m.get("final_video")
         if not video:
             continue
-        movie_dir = Path(video).parent
+        movie_dir = Path(video).parent.resolve()
         if not movie_dir.exists():
+            continue
+        # Safety: never delete outside LIBRARY_DIR
+        try:
+            movie_dir.relative_to(lib_root)
+        except ValueError:
+            log_event("warn", f"cleanup: skipped {movie_dir} — outside LIBRARY_DIR", m["imdb_id"])
             continue
         try:
             shutil.rmtree(str(movie_dir))
@@ -279,14 +288,17 @@ async def _backup_loop(stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
         if not stop.is_set():
-            await asyncio.to_thread(wal_checkpoint)
-            pruned = await asyncio.to_thread(prune_events, 30)
-            if pruned:
-                log_event("info", f"pruned {pruned} old events")
-            dest = await asyncio.to_thread(backup_db)
-            if dest:
-                log_event("info", f"DB backup: {dest.name}")
-            await _cleanup_old_movies()
+            try:
+                await asyncio.to_thread(wal_checkpoint)
+                pruned = await asyncio.to_thread(prune_events, 30)
+                if pruned:
+                    log_event("info", f"pruned {pruned} old events")
+                dest = await asyncio.to_thread(backup_db)
+                if dest:
+                    log_event("info", f"DB backup: {dest.name}")
+                await _cleanup_old_movies()
+            except Exception as _e:
+                log_event("error", f"backup loop error: {repr(_e)}")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -478,6 +490,9 @@ async def _post_complete(movie: dict, qbit_torrent: dict) -> None:
 
     if settings.AUTO_SUBTITLE and new_video:
         await _fetch_sub(movie["imdb_id"], new_video)
+        current = get_movie(movie["imdb_id"])
+        if current and current.get("status") == "no_subtitle":
+            return
 
     if settings.CLOUD_UPLOAD_ENABLED and new_video:
         _bg(_upload_movie(movie["imdb_id"], new_video.parent))
@@ -524,11 +539,18 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
             if not is_zh and settings.TRANS_ENABLED:
                 _bg(_do_translate(imdb_id, video_path))
         else:
-            update_movie(imdb_id, subtitle_status="no_subtitle")
-            log_event("warn", "no subtitle found (embedded + subdl all missed)", imdb_id)
+            log_event("warn", "no subtitle found — deleting library file, will retry when subtitles available", imdb_id)
             rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
-            if settings.TRANS_ENABLED:
-                _bg(_do_translate(imdb_id, video_path))
+            try:
+                if video_path.exists():
+                    video_path.unlink()
+                folder = video_path.parent
+                if folder.exists() and not any(folder.iterdir()):
+                    folder.rmdir()
+            except Exception as _e:
+                log_event("warn", f"subtitle: cleanup failed: {repr(_e)}", imdb_id)
+            # Update DB after file operations so final_video stays valid if deletion fails
+            update_movie(imdb_id, subtitle_status="no_subtitle", status="no_subtitle", final_video=None)
     except Exception as e:
         update_movie(imdb_id, subtitle_status="error", note=str(e))
         log_event("error", f"subtitle: {repr(e)}", imdb_id)
@@ -612,7 +634,7 @@ async def api_search_download(body: SearchDownloadBody):
     # Check if already tracked
     existing = find_by_hash(torrent_hash)
     if existing:
-        if existing.get("status") not in ("skipped", "error"):
+        if existing.get("status") not in ("skipped", "error", "excluded"):
             return {"ok": True, "imdb_id": existing["imdb_id"], "note": "already tracked"}
 
     trackers = await tracker_pool.get_trackers()
@@ -638,6 +660,7 @@ async def api_search_download(body: SearchDownloadBody):
         "size_bytes": body.torrent_size_bytes,
         "status": "discovered",
         "subtitle_status": "pending",
+        "added_at": int(time.time()),
     }
     upsert_movie(movie)
     await rss_watcher._enqueue_to_qbit(movie)
@@ -675,6 +698,10 @@ async def api_translate(imdb_id: str):
 
 
 async def _do_translate(imdb_id: str, video_path: Path) -> None:
+    # Dedup: skip if already running
+    current = get_movie(imdb_id)
+    if current and current.get("subtitle_status") == "translating":
+        return
     update_movie(imdb_id, subtitle_status="translating")
     rss_watcher._publish({"type": "sub.searching", "imdb_id": imdb_id})
 
@@ -689,8 +716,11 @@ async def _do_translate(imdb_id: str, video_path: Path) -> None:
             rss_watcher._publish({"type": "sub.found", "imdb_id": imdb_id, "path": str(srt), "kind": "zh"})
             _bg(notifier.notify("翻译完成", srt.name))
         else:
-            update_movie(imdb_id, subtitle_status="en_only")
-            log_event("warn", "translate: no result, keeping en_only", imdb_id)
+            # Restore prior status: if movie had en_only keep it, otherwise no_subtitle
+            prior = get_movie(imdb_id)
+            fallback = "en_only" if (prior or {}).get("subtitle_path") else "no_subtitle"
+            update_movie(imdb_id, subtitle_status=fallback)
+            log_event("warn", f"translate: no result → {fallback}", imdb_id)
             rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
     except Exception as e:
         update_movie(imdb_id, subtitle_status="en_only", note=str(e))
@@ -756,7 +786,9 @@ def api_delete(imdb_id: str, delete_files: bool = False):
             qbit_client.remove_torrent(m["qbit_hash"], delete_files=delete_files)
         except Exception as e:
             log_event("warn", f"qBit remove: {repr(e)}", imdb_id)
-    delete_movie(imdb_id)
+    update_movie(imdb_id, status="excluded", qbit_hash=None, save_path=None,
+                 final_video=None, subtitle_path=None)
+    log_event("info", f"excluded {m.get('title', imdb_id)}", imdb_id)
     return {"ok": True}
 
 
