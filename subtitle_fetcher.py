@@ -47,16 +47,16 @@ async def fetch_for_video(
     if extracted:
         return extracted
 
-    # L2.5: bundled English .srt packaged with the torrent (e.g. YTS packs)
-    # Verify the file is likely English by sampling its content — YTS packs with
-    # multi-language subs may have non-English files with a plain-stem name.
-    plain_srt = video_path.parent / f"{video_path.stem}.srt"
-    if plain_srt.exists() and _is_likely_english_srt(plain_srt):
-        en_srt = video_path.parent / f"{video_path.stem}.en.srt"
-        if not en_srt.exists():
+    # L2.5: pick the best English subtitle from the directory.
+    # YTS packs often include a plain .srt that is actually a "forced" subtitle
+    # (only foreign-language lines), while a fuller SDH / English.srt exists nearby.
+    en_srt = video_path.parent / f"{video_path.stem}.en.srt"
+    best_en = _pick_best_english_sub(video_path.parent, video_path.stem)
+    if best_en:
+        if not en_srt.exists() or best_en.resolve() != en_srt.resolve():
             import shutil as _shutil
-            _shutil.copy2(str(plain_srt), str(en_srt))
-            log_event("info", "subtitle: bundled .srt promoted to .en.srt for translation", imdb_id)
+            _shutil.copy2(str(best_en), str(en_srt))
+            log_event("info", f"subtitle: picked {best_en.name} as .en.srt ({_count_srt_entries(best_en)} entries)", imdb_id)
         return en_srt
 
     # L3: external English download via subdl (no translation)
@@ -156,6 +156,45 @@ def _ffprobe_subs(video_path: Path) -> list[dict]:
     except Exception:
         return []
 
+
+
+_MIN_FULL_SUB_ENTRIES = 50
+
+def _count_srt_entries(path: "Path") -> int:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return len(re.findall(r"^\d+\s*$", text, re.MULTILINE))
+    except Exception:
+        return 0
+
+_ENG_SUB_PATTERNS = re.compile(r"(english|eng\\.srt|sdh.*eng|\\.en\\.srt)", re.I)
+
+_NON_ENG_KEYWORDS = ("chi", "chs", "cht", "zhs", "spa", "fre", "ger", "ita",
+    "por", "dut", "dan", "swe", "nor", "fin", "rum", "hin", "ukr", "slv",
+    "forced", "latin", "brazilian")
+
+def _pick_best_english_sub(directory: "Path", video_stem: str):
+    candidates = []
+    plain_srt = directory / f"{video_stem}.srt"
+    for f in sorted(directory.iterdir()):
+        if f.suffix.lower() != ".srt" or not f.is_file():
+            continue
+        stem_lower = f.stem.lower()
+        if any(kw in stem_lower for kw in _NON_ENG_KEYWORDS):
+            continue
+        if not _is_likely_english_srt(f):
+            continue
+        count = _count_srt_entries(f)
+        candidates.append((count, f))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_count, best_file = candidates[0]
+    if best_file.resolve() == plain_srt.resolve() and best_count < _MIN_FULL_SUB_ENTRIES:
+        for count, f in candidates[1:]:
+            if count >= _MIN_FULL_SUB_ENTRIES:
+                return f
+    return best_file
 
 def _is_likely_english_srt(path: Path, sample_lines: int = 30) -> bool:
     """Sample up to sample_lines of text from an SRT and check it looks like English."""
@@ -475,16 +514,18 @@ async def translate_en_to_zh(
     import httpx
 
     en_srt = video_path.parent / f"{video_path.stem}.en.srt"
-    if not en_srt.exists():
-        # Fallback: plain .srt bundled with the torrent (same stem, verified English)
-        plain = video_path.parent / f"{video_path.stem}.srt"
-        if plain.exists() and _is_likely_english_srt(plain):
+    # Always check for a better source — existing .en.srt may be forced/partial
+    best = _pick_best_english_sub(video_path.parent, video_path.stem)
+    if best:
+        best_count = _count_srt_entries(best)
+        cur_count = _count_srt_entries(en_srt) if en_srt.exists() else 0
+        if best_count > cur_count:
             import shutil as _shutil
-            _shutil.copy2(str(plain), str(en_srt))
-            log_event("info", "subtitle: promoted bundled .srt to .en.srt for translation", imdb_id)
-        else:
-            log_event("warn", "subtitle: no .en.srt found to translate", imdb_id)
-            return None
+            _shutil.copy2(str(best), str(en_srt))
+            log_event("info", f"subtitle: upgraded .en.srt from {best.name} ({best_count} vs {cur_count} entries)", imdb_id)
+    elif not en_srt.exists():
+        log_event("warn", "subtitle: no .en.srt found to translate", imdb_id)
+        return None
 
     captions = _parse_srt(en_srt)
     if not captions:
@@ -508,6 +549,8 @@ async def translate_en_to_zh(
 
     async def _translate_batch(client: httpx.AsyncClient, idx: int, batch: list) -> None:
         texts = [c[2] for c in batch]
+        numbered_input = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+        last_parsed: list | None = None
         async with sem:
             for attempt in range(3):
                 try:
@@ -519,12 +562,13 @@ async def translate_en_to_zh(
                         json={
                             "model": model,
                             "messages": [
-                                {"role": "system", "content": "You are a professional movie subtitle translator. Output only JSON arrays."},
+                                {"role": "system", "content": "You are a professional movie subtitle translator. Output only a JSON array of strings."},
                                 {"role": "user", "content": (
-                                    "Translate the following subtitle lines to Simplified Chinese. "
-                                    "Return ONLY a JSON array of translated strings, same count as input. "
-                                    "Keep lines concise for subtitles. No explanations.\n\n"
-                                    f"INPUT:\n{json.dumps(texts, ensure_ascii=False)}"
+                                    f"Translate these {len(texts)} subtitle lines to Simplified Chinese. "
+                                    "Return ONLY a JSON array with EXACTLY the same number of strings as input. "
+                                    "Translate each line independently — never merge or split lines. "
+                                    "Keep lines concise. No explanations.\n\n"
+                                    f"{numbered_input}"
                                 )},
                             ],
                         },
@@ -534,14 +578,24 @@ async def translate_en_to_zh(
                     content = resp.json()["choices"][0]["message"]["content"]
                     m = re.search(r"\[.*\]", content, re.DOTALL)
                     parsed = json.loads(m.group(0) if m else content)
-                    if isinstance(parsed, list) and len(parsed) == len(texts):
+                    if not isinstance(parsed, list):
+                        raise ValueError("response is not a list")
+                    last_parsed = parsed
+                    if len(parsed) == len(texts):
                         results[idx] = [str(r).strip() or orig for r, orig in zip(parsed, texts)]
                         return
                     raise ValueError(f"count mismatch: {len(parsed)} vs {len(texts)}")
                 except Exception as e:
                     if attempt == 2:
                         log_event("warn", f"subtitle: translate batch {idx} failed: {repr(e)}", imdb_id)
-                        results[idx] = texts
+                        if last_parsed:
+                            # partial salvage: use translated lines we got, fall back to original for the rest
+                            results[idx] = [
+                                str(last_parsed[i]).strip() if i < len(last_parsed) and str(last_parsed[i]).strip() else texts[i]
+                                for i in range(len(texts))
+                            ]
+                        else:
+                            results[idx] = texts
 
     log_event("info", f"subtitle: translating {len(captions)} lines in {total} batches (concurrent={concurrent})", imdb_id)
     if on_progress:
@@ -581,6 +635,7 @@ async def translate_en_to_zh(
                 f"{i+1}. EN: {en}\n   ZH: {zh}"
                 for i, (en, zh) in enumerate(zip(en_lines, zh_lines))
             )
+            last_parsed: list | None = None
             async with sem:
                 for attempt in range(3):
                     try:
@@ -594,9 +649,9 @@ async def translate_en_to_zh(
                                 "messages": [
                                     {"role": "system", "content": "你是专业电影字幕校审员。只输出 JSON 数组。"},
                                     {"role": "user", "content": (
-                                        "以下是电影字幕英文原文和初译中文，请逐行校审改善译文。\n"
+                                        f"以下是电影字幕英文原文和初译中文，共 {len(zh_lines)} 行，请逐行校审改善译文。\n"
                                         "要求：纠正错译、统一术语、简洁口语化、符合字幕长度。\n"
-                                        "只返回 JSON 字符串数组，行数与输入相同，不要序号不要解释。\n\n"
+                                        f"只返回 JSON 字符串数组，行数必须恰好为 {len(zh_lines)}，不要序号不要解释。\n\n"
                                         f"{payload}"
                                     )},
                                 ],
@@ -607,14 +662,23 @@ async def translate_en_to_zh(
                         content = resp.json()["choices"][0]["message"]["content"]
                         m = re.search(r"\[.*\]", content, re.DOTALL)
                         parsed = json.loads(m.group(0) if m else content)
-                        if isinstance(parsed, list) and len(parsed) == len(zh_lines):
+                        if not isinstance(parsed, list):
+                            raise ValueError("response is not a list")
+                        last_parsed = parsed
+                        if len(parsed) == len(zh_lines):
                             reviewed[chunk_idx] = [str(r).strip() or orig for r, orig in zip(parsed, zh_lines)]
                             return
                         raise ValueError(f"count mismatch: {len(parsed)} vs {len(zh_lines)}")
                     except Exception as e:
                         if attempt == 2:
                             log_event("warn", f"subtitle: review chunk {chunk_idx} failed: {repr(e)}", imdb_id)
-                            reviewed[chunk_idx] = zh_lines
+                            if last_parsed:
+                                reviewed[chunk_idx] = [
+                                    str(last_parsed[i]).strip() if i < len(last_parsed) and str(last_parsed[i]).strip() else zh_lines[i]
+                                    for i in range(len(zh_lines))
+                                ]
+                            else:
+                                reviewed[chunk_idx] = zh_lines
 
         async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(120.0, connect=10.0)) as client:
             review_tasks = [_review_chunk(client, i, chunk) for i, chunk in enumerate(review_chunks)]
