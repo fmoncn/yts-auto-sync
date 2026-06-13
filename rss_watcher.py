@@ -132,6 +132,8 @@ async def _fetch_rss(quality: str) -> list[dict]:
 
         ym = _YEAR_RE.search(title)
         year = int(ym.group(1)) if ym else 0
+        if year and year < (time.localtime().tm_year - 2):
+            continue  # RSS feed: keep last 3 years of new uploads
         qm = _QUALITY_RE.search(title) or _QUALITY_RE.search(desc)
         q_str = (qm.group(1) if qm else quality).lower()
 
@@ -167,6 +169,74 @@ async def _fetch_rss(quality: str) -> list[dict]:
             subtitle_path=None,
             subtitle_status="pending",
             note=None,
+        ))
+    return items
+
+
+async def _fetch_popular(quality: str) -> list[dict]:
+    """Fetch the most-downloaded titles for a quality via the YTS API.
+
+    Unlike the time-ordered RSS feed, ``sort_by=download_count`` surfaces real
+    blockbusters. Returns items in the same shape as ``_fetch_rss`` so the rest
+    of ``poll_once`` (dedup, scoring, enqueue) is unchanged. API objects already
+    carry language/genres/rating, so no async enrichment is needed for these.
+    """
+    import urllib.parse
+    proxy = settings.YTS_API_PROXY or None
+    params = {
+        "sort_by": "download_count",
+        "order_by": "desc",
+        "limit": max(1, min(50, settings.POPULAR_LIMIT)),
+        "quality": quality,
+        "minimum_rating": settings.POPULAR_MIN_RATING,
+    }
+    async with httpx.AsyncClient(timeout=20, proxy=proxy, follow_redirects=True) as cli:
+        r = await cli.get(f"{settings.YTS_API_URL}/list_movies.json", params=params)
+        r.raise_for_status()
+        movies = (r.json().get("data") or {}).get("movies") or []
+
+    year_floor = time.localtime().tm_year - settings.POPULAR_YEARS_BACK
+    items = []
+    for rec in movies:
+        imdb_id = rec.get("imdb_code") or ""
+        if not imdb_id:
+            continue
+        if (rec.get("year") or 0) and rec["year"] < year_floor:
+            continue  # all-time ranking is old-heavy; keep recent-ish blockbusters
+        # Pick the torrent matching the requested quality (fall back to first).
+        torrents = rec.get("torrents") or []
+        tor = next((t for t in torrents if (t.get("quality") or "").lower() == quality.lower()), None)
+        if tor is None:
+            tor = torrents[0] if torrents else None
+        if tor is None or not tor.get("hash"):
+            continue
+        info_hash = tor["hash"].lower()
+        title = rec.get("title_long") or rec.get("title") or ""
+        magnet = f"magnet:?xt=urn:btih:{info_hash}&dn={urllib.parse.quote(title)}"
+        items.append(dict(
+            imdb_id=imdb_id,
+            title=title,
+            year=rec.get("year") or 0,
+            quality=(tor.get("quality") or quality).lower(),
+            size_bytes=tor.get("size_bytes") or 0,
+            rating=float(rec.get("rating") or 0.0),
+            genres=", ".join(rec.get("genres") or []),
+            poster_url=rec.get("large_cover_image") or rec.get("medium_cover_image") or "",
+            synopsis=(rec.get("description_full") or rec.get("synopsis") or "")[:800] or None,
+            imdb_url=f"https://www.imdb.com/title/{imdb_id}/",
+            magnet=magnet,
+            info_hash=info_hash,
+            yts_url=rec.get("url") or "",
+            rss_pub_at=rec.get("date_uploaded_unix") or 0,
+            added_at=int(time.time()),
+            status="discovered",
+            qbit_hash=None,
+            save_path=None,
+            final_video=None,
+            subtitle_path=None,
+            subtitle_status="pending",
+            note=None,
+            language=rec.get("language") or None,
         ))
     return items
 
@@ -223,6 +293,9 @@ async def _enrich_from_yts_api(movie: dict) -> None:
             patch["synopsis"] = rec["description_full"][:800]
         elif rec.get("synopsis"):
             patch["synopsis"] = rec["synopsis"][:800]
+        if rec.get("language"):
+            patch["language"] = rec["language"]
+
 
         if rec.get("rating") and not movie.get("rating"):
             patch["rating"] = float(rec["rating"])
@@ -264,6 +337,24 @@ def _should_auto_download(m: dict) -> tuple[bool, str]:
         if gb > settings.MAX_SIZE_GB:
             return False, f"size {gb:.1f}G > {settings.MAX_SIZE_GB}G"
 
+    # Language filter
+    allowed = {l.strip() for l in settings.ALLOWED_LANGUAGES.split(",") if l.strip()}
+    if allowed and m.get("language") and m["language"] not in allowed:
+        lang = m.get("language", "unknown")
+        return False, f"blocked language: {lang}"
+
+    # Genre gate: reject when the PRIMARY genre is niche (doc/music), optionally
+    # require a blockbuster genre. Genres are alphabetical, so a film keeps an
+    # Action/Adventure/Animation primary and only doc/music-centric titles lead
+    # with a blocked genre.
+    movie_genres = [g.strip() for g in (m.get("genres") or "").split(",") if g.strip()]
+    if movie_genres and movie_genres[0].lower() in settings.block_genres:
+        return False, f"niche primary genre: {movie_genres[0]}"
+    genres_lower = {g.lower() for g in movie_genres}
+    require = settings.require_genres
+    if require and not (genres_lower & require):
+        return False, f"no required genre (has {','.join(movie_genres) or 'none'})"
+
     rules = _download_rules
     genre_rules = rules.get("genres_bonus", {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20})
     min_auto_score = rules.get("min_auto_score", 80)
@@ -271,13 +362,13 @@ def _should_auto_download(m: dict) -> tuple[bool, str]:
 
     base_score = 0
     rating = m.get("rating") or 0.0
-    if rating > 0:
-        base_score = (rating - 5.0) * 10
-    else:
+    if rating <= 0:
         return False, "no rating available"
+    if rating < settings.MIN_IMDB_RATING:
+        return False, f"rating {rating} < {settings.MIN_IMDB_RATING}"
+    base_score = (rating - 5.0) * 10
 
     bonus = 0
-    movie_genres = [g.strip() for g in (m.get("genres") or "").split(",")]
     for g in movie_genres:
         if g in genre_rules:
             bonus += genre_rules[g]
@@ -313,37 +404,57 @@ async def _enqueue_to_qbit(m: dict) -> None:
 async def poll_once() -> dict:
     summary = {"fetched": 0, "new": 0, "queued": 0, "errors": []}
     for quality in settings.qualities:
-        items = None
+        items: list[dict] = []
+        # Source 1: popular ranking via YTS API (sort_by=download_count) — blockbusters.
+        if settings.POPULAR_SOURCE_ENABLED:
+            try:
+                items.extend(await _fetch_popular(quality))
+            except Exception as e:
+                err_msg = f"popular {quality}: {repr(e)}"
+                summary["errors"].append(err_msg)
+                log_event("error", f"popular fetch {err_msg}\n{traceback.format_exc()[-300:]}")
+        # Source 2: RSS feed (newest uploads), with one retry.
+        rss_items = None
         for _attempt in range(2):
             try:
-                items = await _fetch_rss(quality)
+                rss_items = await _fetch_rss(quality)
                 break
             except Exception as e:
                 if _attempt == 1:
-                    err_msg = f"{quality}: {repr(e)}"
+                    err_msg = f"rss {quality}: {repr(e)}"
                     summary["errors"].append(err_msg)
                     log_event("error", f"RSS fetch {err_msg}\n{traceback.format_exc()[-300:]}")
                 else:
                     await asyncio.sleep(15)
-        if items is None:
+        if rss_items:
+            items.extend(rss_items)
+        if not items:
             continue
+        # Dedup within this batch by imdb_id, preferring the richer popular record
+        # (listed first, so "first wins" keeps it).
+        seen: dict[str, dict] = {}
+        for it in items:
+            key = it.get("imdb_id") or it.get("info_hash")
+            if key and key not in seen:
+                seen[key] = it
+        items = list(seen.values())
         summary["fetched"] += len(items)
         # Sort by quality descending so 2160p is always processed before 1080p/720p
         _Q = {"2160p": 3, "1080p": 2, "720p": 1}
         items.sort(key=lambda x: _Q.get((x.get("quality") or "").lower(), 0), reverse=True)
-        min_year = time.localtime().tm_year - 2  # keep last 3 years
+        # Year filtering is applied per-source at fetch time (RSS: last 3 years;
+        # popular: POPULAR_YEARS_BACK), so no blanket filter here.
         for m in items:
-            if m.get("year") and m["year"] < min_year:
-                continue  # skip movies older than 3 years
             is_new = upsert_movie(m)
             if is_new:
                 summary["new"] += 1
                 _publish({"type": "movie.new", "movie": m})
-                log_event("info", f"new RSS item: {m['title']}", m["imdb_id"])
-                # Enrich metadata from YTS API asynchronously
-                task = asyncio.create_task(_enrich_from_yts_api(m))
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
+                log_event("info", f"new item: {m['title']}", m["imdb_id"])
+                # Enrich metadata when the source didn't supply language/genres
+                # (RSS items lack these). Await so the download decision below
+                # sees language/genres — fixes the prior fire-and-forget race.
+                if not m.get("language") or not m.get("genres"):
+                    await _enrich_from_yts_api(m)
                 dup = _find_active_duplicate(m)
                 if dup:
                     note = f"duplicate: {dup['quality']} already {dup['status']}"

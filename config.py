@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     TRANS_BASE_URL: str = "http://YOUR_LLM_HOST:8317/v1"
     TRANS_API_KEY: str = "cliproxy-local"
     TRANS_MODEL: str = "deepseek-v4-flash"
-    TRANS_REVIEW_MODEL: str = "deepseek-v4-flash"  # review pass after bulk translation
+    TRANS_REVIEW_MODEL: str = "qoder/ultimate"  # review pass after bulk translation
     TRANS_REVIEW_BATCH: int = 80                 # lines per review chunk
     TRANS_BATCH_SIZE: int = 20
     TRANS_CONCURRENT: int = 4
@@ -55,8 +55,24 @@ class Settings(BaseSettings):
     # AUTO_DOWNLOAD_RULES determines scoring bonuses/penalties and thresholds
     AUTO_DOWNLOAD_RULES: str = '{"genres_bonus": {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20}, "min_auto_score": 80, "min_review_score": 65}'
     MIN_IMDB_RATING: float = 6.5
+    ALLOWED_LANGUAGES: str = "en"  # comma-separated, e.g. "en,zh,ja"
     MAX_SIZE_GB: float = 12.0
     AUTO_SUBTITLE: bool = True
+
+    # ── Popular discovery (YTS API by download_count) ─────────────
+    # Pull the most-downloaded titles instead of relying only on the
+    # time-ordered RSS feed, so auto-download targets real blockbusters.
+    POPULAR_SOURCE_ENABLED: bool = True
+    POPULAR_LIMIT: int = 50              # top N per quality from the download_count ranking
+    POPULAR_MIN_RATING: float = 6.5      # passed to YTS API minimum_rating
+    POPULAR_YEARS_BACK: int = 7          # popular ranking is all-time; keep titles newer than this (2026-7=2019)
+    # Reject when the movie's PRIMARY (first-listed) genre is one of these —
+    # targets niche docs/music films without dropping blockbusters that merely
+    # carry a secondary Music/Musical tag (e.g. Guardians of the Galaxy, Moana).
+    BLOCK_GENRES: str = "Documentary,Music,Musical,Concert"
+    # If non-empty, a title must match at least one of these genres to qualify.
+    # Left empty by default: the download_count ranking already favors blockbusters.
+    REQUIRE_GENRES: str = ""
 
     LIBRARY_DIR: str = "/mnt/extdata/library"
     AUTO_ORGANIZE: bool = True
@@ -99,6 +115,14 @@ class Settings(BaseSettings):
     @property
     def sub_langs(self) -> list[str]:
         return [l.strip() for l in self.SUB_LANGS.split(",") if l.strip()]
+
+    @property
+    def block_genres(self) -> set[str]:
+        return {g.strip().lower() for g in self.BLOCK_GENRES.split(",") if g.strip()}
+
+    @property
+    def require_genres(self) -> set[str]:
+        return {g.strip().lower() for g in self.REQUIRE_GENRES.split(",") if g.strip()}
 
     @property
     def base_dir(self) -> Path:
