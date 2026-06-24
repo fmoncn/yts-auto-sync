@@ -254,7 +254,7 @@ async def _cleanup_old_movies() -> None:
     cutoff = int(time.time()) - keep_days * 86400
     lib_root = Path(settings.LIBRARY_DIR).resolve()
     removed = 0
-    for m in list_movies(limit=500):
+    for m in list_movies(limit=0):
         if (m.get("added_at") or 0) > cutoff:
             continue
         video = m.get("final_video")
@@ -539,18 +539,24 @@ async def _fetch_sub(imdb_id: str, video_path: Path) -> None:
             if not is_zh and settings.TRANS_ENABLED:
                 _bg(_do_translate(imdb_id, video_path))
         else:
-            log_event("warn", "no subtitle found — deleting library file, will retry when subtitles available", imdb_id)
-            rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id})
-            try:
-                if video_path.exists():
-                    video_path.unlink()
-                folder = video_path.parent
-                if folder.exists() and not any(folder.iterdir()):
-                    folder.rmdir()
-            except Exception as _e:
-                log_event("warn", f"subtitle: cleanup failed: {repr(_e)}", imdb_id)
-            # Update DB after file operations so final_video stays valid if deletion fails
-            update_movie(imdb_id, subtitle_status="no_subtitle", status="no_subtitle", final_video=None)
+            movie_rec = get_movie(imdb_id) or {}
+            retry_count = (movie_rec.get("retry_count") or 0) + 1
+            MAX_RETRIES = 3
+            if retry_count < MAX_RETRIES:
+                log_event("warn", f"no subtitle found (attempt {retry_count}/{MAX_RETRIES}), keeping file for retry", imdb_id)
+                update_movie(imdb_id, subtitle_status="no_subtitle", retry_count=retry_count)
+            else:
+                log_event("warn", f"no subtitle after {MAX_RETRIES} attempts — removing library file", imdb_id)
+                try:
+                    if video_path.exists():
+                        video_path.unlink()
+                    folder = video_path.parent
+                    if folder.exists() and not any(folder.iterdir()):
+                        folder.rmdir()
+                except Exception as _e:
+                    log_event("warn", f"subtitle: cleanup failed: {repr(_e)}", imdb_id)
+                update_movie(imdb_id, subtitle_status="no_subtitle", status="no_subtitle", final_video=None, retry_count=retry_count)
+            rss_watcher._publish({"type": "sub.missing", "imdb_id": imdb_id, "attempt": retry_count})
     except Exception as e:
         update_movie(imdb_id, subtitle_status="error", note=str(e))
         log_event("error", f"subtitle: {repr(e)}", imdb_id)

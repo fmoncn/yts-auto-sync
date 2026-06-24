@@ -611,7 +611,7 @@ async def translate_en_to_zh(
         for i, coro in enumerate(asyncio.as_completed(tasks)):
             await coro
             if on_progress:
-                done = len(results)
+                done = i + 1
                 on_progress(f"翻译进度 {done*100//total}% ({done}/{total} 批)")
 
     out_captions = []
