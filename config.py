@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     AUTO_DOWNLOAD: bool = False
     # AUTO_DOWNLOAD_RULES determines scoring bonuses/penalties and thresholds
     AUTO_DOWNLOAD_RULES: str = '{"genres_bonus": {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20}, "min_auto_score": 45, "min_review_score": 30}'
-    MIN_IMDB_RATING: float = 6.5
+    MIN_IMDB_RATING: float = 6.0
     ALLOWED_LANGUAGES: str = "en"  # comma-separated, e.g. "en,zh,ja"
     MAX_SIZE_GB: float = 12.0
     AUTO_SUBTITLE: bool = True
