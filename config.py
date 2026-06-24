@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     POPULAR_SOURCE_ENABLED: bool = True
     POPULAR_LIMIT: int = 50              # top N per quality from the download_count ranking
     POPULAR_MIN_RATING: float = 6.5      # passed to YTS API minimum_rating
-    POPULAR_YEARS_BACK: int = 7          # popular ranking is all-time; keep titles newer than this (2026-7=2019)
+    POPULAR_YEARS_BACK: int = 15          # popular ranking is all-time; keep titles newer than this (2026-15=2011)
     # Reject when the movie's PRIMARY (first-listed) genre is one of these —
     # targets niche docs/music films without dropping blockbusters that merely
     # carry a secondary Music/Musical tag (e.g. Guardians of the Galaxy, Moana).

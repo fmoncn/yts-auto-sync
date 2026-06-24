@@ -14,7 +14,7 @@ Web UI 端口 `4003`，与 [video-subtitle-maker](https://github.com/fmoncn/vide
 
 ### 片源发现（双轨）
 
-- **热门榜**：轮询 YTS API `sort_by=download_count`，抓近年（默认 7 年内）全站热门，带 language / genres / rating 信息
+- **热门榜**：轮询 YTS API `sort_by=download_count`，抓近年（默认 15 年内）全站热门，带 language / genres / rating 信息
 - **RSS 新片**：按上传时间拉最新入库影片
 - 两路在 `poll_once` 合并去重，热门优先
 
@@ -174,7 +174,7 @@ Web UI on port `4003`, sharing the same visual style as [video-subtitle-maker](h
 
 #### Dual-source Discovery
 
-- **Popular ranking** — Polls YTS API `sort_by=download_count`, filters to recent years (default: last 7). Carries language / genres / rating metadata.
+- **Popular ranking** — Polls YTS API `sort_by=download_count`, filters to recent years (default: last 15). Carries language / genres / rating metadata.
 - **RSS new releases** — Pulls latest uploads by publish date.
 - Both sources merged and deduplicated per `poll_once`; popular takes priority on conflict.
 
