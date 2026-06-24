@@ -10,7 +10,7 @@ import feedparser
 import httpx
 
 from config import settings
-from store import upsert_movie, update_movie, log_event, get_movie, list_movies
+from store import upsert_movie, update_movie, log_event, get_movie, list_movies, find_active_by_title
 import tracker_pool
 import qbit_client
 
@@ -313,18 +313,14 @@ async def _enrich_from_yts_api(movie: dict) -> None:
 
 def _find_active_duplicate(m: dict):
     """Return existing record if same title+year already has an active status."""
-    active = {"downloading", "done", "seeding", "organizing"}
     clean = re.sub(r"\s*\(\d{4}\).*", "", m.get("title", "")).strip()
     clean = re.sub(r"\s*\[.*", "", clean).strip().lower()
-    year = m.get("year")
-    for ex in list_movies():
-        if ex["imdb_id"] == m["imdb_id"]:
-            continue
-        if ex.get("status") not in active and not ex.get("final_video"):
-            continue
+    year = m.get("year") or 0
+    candidates = find_active_by_title(clean, year, m["imdb_id"])
+    for ex in candidates:
         ex_title = re.sub(r"\s*\(\d{4}\).*", "", ex.get("title", "")).strip()
         ex_title = re.sub(r"\s*\[.*", "", ex_title).strip().lower()
-        if ex_title == clean and ex.get("year") == year:
+        if ex_title == clean:
             return ex
     return None
 
@@ -347,7 +343,12 @@ def _should_auto_download(m: dict) -> tuple[bool, str]:
     # require a blockbuster genre. Genres are alphabetical, so a film keeps an
     # Action/Adventure/Animation primary and only doc/music-centric titles lead
     # with a blocked genre.
-    movie_genres = [g.strip() for g in (m.get("genres") or "").split(",") if g.strip()]
+    # 兼容 RSS（"/" 分隔）和 API（"," 分隔）两种 genres 格式
+    raw_genres = m.get("genres") or ""
+    if " / " in raw_genres:
+        movie_genres = [g.strip() for g in raw_genres.split("/") if g.strip()]
+    else:
+        movie_genres = [g.strip() for g in raw_genres.split(",") if g.strip()]
     if movie_genres and movie_genres[0].lower() in settings.block_genres:
         return False, f"niche primary genre: {movie_genres[0]}"
     genres_lower = {g.lower() for g in movie_genres}
@@ -357,8 +358,8 @@ def _should_auto_download(m: dict) -> tuple[bool, str]:
 
     rules = _download_rules
     genre_rules = rules.get("genres_bonus", {"Sci-Fi": 10, "Thriller": 5, "Action": 5, "Musical": -20, "Documentary": -20})
-    min_auto_score = rules.get("min_auto_score", 80)
-    min_review_score = rules.get("min_review_score", 60)
+    min_auto_score = rules.get("min_auto_score", 45)
+    min_review_score = rules.get("min_review_score", 30)
 
     base_score = 0
     rating = m.get("rating") or 0.0

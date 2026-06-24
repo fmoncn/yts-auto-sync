@@ -25,11 +25,16 @@ def client() -> qbittorrentapi.Client:
 
 
 def _ensure_login() -> None:
+    global _client
     c = client()
     try:
         c.auth_log_in()
     except qbittorrentapi.LoginFailed as e:
         log_event("error", f"qBit login failed: {e}")
+        raise
+    except (ConnectionError, OSError) as e:
+        log_event("warn", f"qBit connection error, resetting client: {e}")
+        _client = None
         raise
 
 

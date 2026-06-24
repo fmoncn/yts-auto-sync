@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS movies (
     subtitle_path  TEXT,
     subtitle_status TEXT,
     note           TEXT,
-    title_zh       TEXT
+    title_zh       TEXT,
+    retry_count    INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_movies_status ON movies(status);
 CREATE INDEX IF NOT EXISTS idx_movies_added  ON movies(added_at);
@@ -59,6 +60,7 @@ _MIGRATIONS = [
     "ALTER TABLE movies ADD COLUMN title_zh TEXT",
     "ALTER TABLE movies ADD COLUMN synopsis_zh TEXT",
     "ALTER TABLE movies ADD COLUMN language TEXT",
+    "ALTER TABLE movies ADD COLUMN retry_count INTEGER DEFAULT 0",
 ]
 
 
@@ -150,7 +152,7 @@ def get_movie(imdb_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def list_movies(status: Optional[str] = None, limit: int = 500) -> list[dict]:
+def list_movies(status: Optional[str] = None, limit: int = 2000) -> list[dict]:
     q = "SELECT * FROM movies"
     args: tuple = ()
     if status:
@@ -158,10 +160,24 @@ def list_movies(status: Optional[str] = None, limit: int = 500) -> list[dict]:
         args = (status,)
     else:
         q += " WHERE status != 'excluded'"
-    q += " ORDER BY added_at DESC LIMIT ?"
-    args += (limit,)
+    q += " ORDER BY added_at DESC"
+    if limit > 0:
+        q += " LIMIT ?"
+        args += (limit,)
     with _lock:
         rows = _conn.execute(q, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def find_active_by_title(clean_title: str, year: int, exclude_imdb: str) -> list[dict]:
+    """Return active/done records matching cleaned title+year (for dup detection)."""
+    active = ("downloading", "done", "seeding", "organizing")
+    placeholders = ",".join("?" * len(active))
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT * FROM movies WHERE year=? AND status IN ({placeholders}) AND imdb_id!=?",
+            (year, *active, exclude_imdb),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

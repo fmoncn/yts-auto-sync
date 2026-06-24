@@ -542,6 +542,11 @@ async def translate_en_to_zh(
         log_event("warn", "subtitle: TRANS_BASE_URL not set, cannot translate", imdb_id)
         return None
 
+    movie_meta = get_movie(imdb_id) or {}
+    film_ctx = _clean_title(movie_meta.get("title", "")) or ""
+    if movie_meta.get("year"):
+        film_ctx = f"{film_ctx} ({movie_meta['year']})"
+
     batches = [captions[i:i+batch_size] for i in range(0, len(captions), batch_size)]
     total = len(batches)
     results: dict[int, list[str]] = {}
@@ -562,9 +567,9 @@ async def translate_en_to_zh(
                         json={
                             "model": model,
                             "messages": [
-                                {"role": "system", "content": "You are a professional movie subtitle translator. Output only a JSON array of strings."},
+                                {"role": "system", "content": f"You are a professional movie subtitle translator for the film {film_ctx!r}. Output only a JSON array of strings."},
                                 {"role": "user", "content": (
-                                    f"Translate these {len(texts)} subtitle lines to Simplified Chinese. "
+                                    f"Film: {film_ctx}\nTranslate these {len(texts)} subtitle lines to Simplified Chinese. "
                                     "Return ONLY a JSON array with EXACTLY the same number of strings as input. "
                                     "Translate each line independently — never merge or split lines. "
                                     "Keep lines concise. No explanations.\n\n"
